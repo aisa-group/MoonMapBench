@@ -1,0 +1,10 @@
+{
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "low",
+  "res_deg": 2.0,
+  "samples_per_pixel": 1,
+  "n_pixels": 16200,
+  "mae_m": 1495.782986111111,
+  "baseline_zero_mae_m": 1787.6106712962962,
+  "reference_cell_mean_mae_m": 405.40252835884115
+}

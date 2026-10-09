@@ -1,0 +1,213 @@
+"""Query a model for the elevation at every pixel centre of a grid.
+
+Answers are appended to results/<model>__<effort>/responses.jsonl, one JSON
+record per (lat, lon, sample). Points already present are skipped, so an
+interrupted run can be restarted and a finer grid reuses any coinciding points.
+An answer that is not a plain number stops the run before it is saved; rerunning
+asks that point again.
+
+The OpenAI API rate-limits an account. The number of requests in flight adapts
+(AIMD): it starts at --concurrency, drops by 20% when the API answers HTTP 429
+(at most once per 30 s), and slowly grows back up to --concurrency.
+Running out of quota stops the run.
+
+    python -m moonmapbench.query --res 22.5 --samples 1
+"""
+
+import argparse
+import asyncio
+import fcntl
+import json
+import random
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import openai
+
+from moonmapbench import RESULTS_DIR
+from moonmapbench.grid import grid_points
+from moonmapbench.prompt import build_prompt, parse_elevation
+
+MAX_ATTEMPTS = 8  # with the backoff below, ~6 min of failures before giving up on a point
+BASE_DELAY_S = 5
+MAX_DELAY_S = 120
+RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+
+class AdaptiveLimit:
+    """Concurrency limit that backs off on rate limiting (AIMD).
+
+    +2 per `limit` successes (about +2 per round of requests), x0.8 on a rate-limit error.
+    Requests already in flight when the backend starts limiting fail together, so at most
+    one cut per `cooldown_s` (about one request latency).
+    """
+
+    def __init__(self, maximum: int, cooldown_s: float = 30.0):
+        self.maximum = maximum
+        self.limit = float(maximum)
+        self.cooldown_s = cooldown_s
+        self.active = 0
+        self._last_cut = -float("inf")
+        self._cond = asyncio.Condition()
+
+    async def __aenter__(self) -> None:
+        async with self._cond:
+            await self._cond.wait_for(lambda: self.active < int(self.limit))
+            self.active += 1
+
+    async def __aexit__(self, *exc) -> None:
+        async with self._cond:
+            self.active -= 1
+            self._cond.notify_all()
+
+    def success(self) -> None:
+        self.limit = min(self.maximum, self.limit + 2 / self.limit)
+
+    def rate_limited(self) -> None:
+        now = time.monotonic()
+        if now - self._last_cut >= self.cooldown_s:
+            self.limit = max(1.0, self.limit * 0.8)
+            self._last_cut = now
+
+
+def run_dir(model: str, effort: str) -> Path:
+    return RESULTS_DIR / f"{model}__{effort}"
+
+
+def load_responses(path: Path, model: str, effort: str) -> dict[tuple[float, float, int], dict]:
+    """Existing records keyed by (lat, lon, sample). Raises on duplicates or mismatched prompt/model/effort."""
+    records: dict[tuple[float, float, int], dict] = {}
+    if not path.exists():
+        return records
+    with open(path, encoding="utf-8") as f:
+        for line_no, line in enumerate(f, 1):
+            rec = json.loads(line)
+            key = (rec["lat"], rec["lon"], rec["sample"])
+            if key in records:
+                raise RuntimeError(f"{path}:{line_no}: duplicate record for {key}")
+            if rec["model"] != model or rec["reasoning_effort"] != effort:
+                raise RuntimeError(f"{path}:{line_no}: record is for {rec['model']}/{rec['reasoning_effort']}")
+            if rec["prompt"] != build_prompt(rec["lat"], rec["lon"]):
+                raise RuntimeError(
+                    f"{path}:{line_no}: stored prompt differs from the current PROMPT_TEMPLATE. "
+                    "Move the old results away before querying with a new prompt."
+                )
+            records[key] = rec
+    return records
+
+
+async def query_one(client: openai.AsyncOpenAI, limit: AdaptiveLimit, model: str, effort: str,
+                    lat: float, lon: float, sample: int) -> dict:
+    prompt = build_prompt(lat, lon)
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        async with limit:
+            start = time.monotonic()
+            try:
+                completion = await client.chat.completions.create(
+                    model=model, reasoning_effort=effort, messages=[{"role": "user", "content": prompt}]
+                )
+            except openai.APIConnectionError as e:  # includes timeouts
+                error = f"{type(e).__name__}: {e}"
+            except openai.APIStatusError as e:
+                # A 429 for an exhausted quota does not go away by waiting.
+                if e.status_code not in RETRY_STATUS or e.code == "insufficient_quota":
+                    raise RuntimeError(f"HTTP {e.status_code} for ({lat}, {lon}): {e.message[:1000]}") from e
+                error = f"HTTP {e.status_code}: {e.message[:300]}"
+                if e.status_code == 429:
+                    limit.rate_limited()
+            else:
+                limit.success()
+                break
+        if attempt == MAX_ATTEMPTS:
+            raise RuntimeError(f"giving up on ({lat}, {lon}) after {MAX_ATTEMPTS} attempts: {error}")
+        # Random jitter so requests that failed together do not retry together.
+        delay = min(MAX_DELAY_S, BASE_DELAY_S * 2 ** (attempt - 1)) * random.uniform(0.5, 1.5)
+        print(f"  retry {attempt}/{MAX_ATTEMPTS - 1} for ({lat}, {lon}) in {delay:.0f}s "
+              f"(limit {int(limit.limit)}): {error}", flush=True)
+        await asyncio.sleep(delay)
+
+    if len(completion.choices) != 1:
+        raise RuntimeError(f"expected 1 choice, got {len(completion.choices)}: {completion}")
+    choice = completion.choices[0]
+    content = choice.message.content
+    if (choice.finish_reason != "stop" or not isinstance(content, str) or not content.strip()
+            or completion.usage is None):
+        raise RuntimeError(f"bad completion for ({lat}, {lon}): {completion}")
+    parse_elevation(content)  # raises ValueError on anything but a plain number
+    return {
+        "lat": lat,
+        "lon": lon,
+        "sample": sample,
+        "model": model,
+        "reasoning_effort": effort,
+        "prompt": prompt,
+        "response": content,
+        "usage": completion.usage.model_dump(exclude_none=True),
+        "latency_s": round(time.monotonic() - start, 2),
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+async def main(args: argparse.Namespace) -> None:
+    out_dir = run_dir(args.model, args.effort)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "responses.jsonl"
+    # Two concurrent queries on the same file would write duplicate records.
+    lock = open(out_dir / ".query.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise RuntimeError(f"another moonmapbench.query is already writing to {path}") from None
+    existing = load_responses(path, args.model, args.effort)
+
+    points = grid_points(args.res)
+    todo = [(lat, lon, s) for lat, lon in points for s in range(args.samples) if (lat, lon, s) not in existing]
+    total = len(points) * args.samples
+    print(f"{args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples = {total}; "
+          f"{total - len(todo)} cached, {len(todo)} to query -> {path}", flush=True)
+    if not todo:
+        return
+
+    limit = AdaptiveLimit(args.concurrency)
+    done = 0
+    t0 = time.monotonic()
+    # Reads OPENAI_API_KEY. Retries happen in query_one, so they can lower the concurrency limit.
+    async with openai.AsyncOpenAI(timeout=args.timeout, max_retries=0) as client:
+        with open(path, "a", encoding="utf-8") as f:
+
+            async def worker(lat: float, lon: float, sample: int) -> None:
+                nonlocal done
+                rec = await query_one(client, limit, args.model, args.effort, lat, lon, sample)
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.flush()
+                done += 1
+                elapsed = time.monotonic() - t0
+                print(f"[{done}/{len(todo)} {elapsed:6.0f}s {done / elapsed:4.1f}/s limit {int(limit.limit):3d}] "
+                      f"{rec['prompt'].rsplit('. ', 1)[-1]:>24} -> {rec['response']!r}", flush=True)
+
+            async with asyncio.TaskGroup() as tg:
+                for lat, lon, sample in todo:
+                    tg.create_task(worker(lat, lon, sample))
+
+
+def cli() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--res", type=float, default=22.5, help="degrees per pixel (must divide 180)")
+    p.add_argument("--samples", type=int, default=1, help="answers per pixel")
+    p.add_argument("--model", default="gpt-6.1-sol")
+    p.add_argument("--effort", default="low", help="reasoning effort")
+    p.add_argument("--concurrency", type=int, default=256, help="maximum parallel requests (adapts down on rate limits)")
+    p.add_argument("--timeout", type=float, default=600, help="per-request timeout in seconds")
+    args = p.parse_args()
+    if args.samples < 1:
+        p.error("--samples must be >= 1")
+    if args.concurrency < 1:
+        p.error("--concurrency must be >= 1")
+    if not args.timeout > 0:
+        p.error("--timeout must be > 0")
+    asyncio.run(main(args))
+
+
+if __name__ == "__main__":
+    cli()
