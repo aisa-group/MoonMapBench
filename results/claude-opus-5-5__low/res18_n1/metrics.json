@@ -1,0 +1,10 @@
+{
+  "model": "claude-opus-5-5",
+  "reasoning_effort": "low",
+  "res_deg": 18.0,
+  "samples_per_pixel": 1,
+  "n_pixels": 200,
+  "mae_m": 1300.725,
+  "baseline_zero_mae_m": 1893.92125,
+  "reference_cell_mean_mae_m": 951.6355875921244
+}
