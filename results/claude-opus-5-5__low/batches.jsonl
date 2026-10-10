@@ -1,0 +1,5 @@
+{"event": "submitted", "batch_id": "msgbatch_01YbMW6UAGsV2Nn4ETMQcjtB", "n_requests": 987, "estimated_cost_usd": 2.37, "time": "2026-10-10T16:13:16+00:00"}
+{"event": "collected", "batch_id": "msgbatch_01YbMW6UAGsV2Nn4ETMQcjtB", "saved": 987, "failed": 0, "time": "2026-10-10T16:32:24+00:00"}
+{"event": "submitting", "n_requests": 15013, "params_sha256": "3ed6c26dde224e8e0e698ebcee662d8b3cd624de447ac5de3cb5f9f0fe9ccaf3", "estimated_cost_usd": 36.62, "time": "2026-10-10T16:32:57+00:00"}
+{"event": "submitted", "batch_id": "msgbatch_019HgCp6ejjscxhawQY2yeJp", "n_requests": 15013, "params_sha256": "3ed6c26dde224e8e0e698ebcee662d8b3cd624de447ac5de3cb5f9f0fe9ccaf3", "estimated_cost_usd": 36.62, "time": "2026-10-10T16:32:59+00:00"}
+{"event": "collected", "batch_id": "msgbatch_019HgCp6ejjscxhawQY2yeJp", "saved": 15013, "failed": 0, "time": "2026-10-10T16:48:14+00:00"}

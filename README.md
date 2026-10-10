@@ -43,6 +43,7 @@ equirectangular lat/lon grid and draws the answers as an image. Here we ask for 
 | gpt-6.1-sol | low | 22.5° (16 × 8) | 1 | **1,514 m** | 1,925 m | 925 m |
 | gpt-6.1-sol | low | 7.5° (48 × 24) | 1 | **1,483 m** | 1,754 m | 735 m |
 | gpt-6.1-sol | low | 2° (180 × 90) | 1 | **1,496 m** | 1,788 m | 405 m |
+| claude-opus-5-5 | low | 2° (180 × 90) | 1 | **1,192 m** | 1,788 m | 405 m |
 
 ![gpt-6.1-sol's blind map at 2° above the ground truth at the same pixel centres](results/gpt-6.1-sol__low/res2_n1/stacked.png)
 
@@ -60,6 +61,10 @@ little of the crater-scale roughness of the real map.
 The MAE stays at about 1.5 km at every resolution, while the exact-cell-average reference
 drops from 925 m to 405 m. So the error comes from what the model does not know, not
 from the coarse grid.
+
+Claude Opus 5.5 at 2°: [with LOLA at the same resolution](results/claude-opus-5-5__low/res2_n1/side_by_side_same_res.png),
+[stacked](results/claude-opus-5-5__low/res2_n1/stacked.png). Its answers came through the
+Message Batches API (all but 220 test answers), which uses the same requests at half price.
 
 Other figures: [`res2_n1/maps.png`](results/gpt-6.1-sol__low/res2_n1/maps.png) (with LOLA
 sampled at the same points), [7.5°](results/gpt-6.1-sol__low/res7.5_n1/side_by_side.png),
