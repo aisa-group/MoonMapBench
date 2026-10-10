@@ -2,6 +2,8 @@
 
 import re
 
+from moonmapbench.bodies import Body
+
 
 def _format_degrees(value: float) -> str:
     text = repr(abs(float(value)))
@@ -19,8 +21,8 @@ def format_location(lat: float, lon: float) -> str:
     return f"{lat_text}, {lon_text}"
 
 
-def build_prompt(body, lat: float, lon: float) -> str:
-    """The question about (lat, lon) on `body` (a bodies.Body)."""
+def build_prompt(body: Body, lat: float, lon: float) -> str:
+    """The question about (lat, lon) on `body`."""
     return body.prompt_template.format(location=format_location(lat, lon))
 
 

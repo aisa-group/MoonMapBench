@@ -56,12 +56,15 @@ def ensure_file(spec: DemFile) -> Path:
         tmp = path.with_suffix(path.suffix + ".part")
         # certifi's CA list: some servers (PDS Geosciences) chain to roots that older systems lack.
         context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(spec.url, timeout=60, context=context) as resp, open(tmp, "wb") as f:
+        # planetarymaps.usgs.gov refuses urllib's default User-Agent (HTTP 403).
+        request = urllib.request.Request(spec.url, headers={"User-Agent": "moonmapbench"})
+        with urllib.request.urlopen(request, timeout=60, context=context) as resp, open(tmp, "wb") as f:
             shutil.copyfileobj(resp, f)
         digest = _sha256(tmp)
         if digest != spec.sha256:
             raise RuntimeError(f"downloaded {tmp} has sha256 {digest}, expected {spec.sha256}")
         tmp.rename(path)
+        return path
     digest = _sha256(path)
     if digest != spec.sha256:
         raise RuntimeError(f"{path} has sha256 {digest}, expected {spec.sha256}. Delete it and rerun.")

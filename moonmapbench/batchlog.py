@@ -1,4 +1,4 @@
-"""The log of Message Batches sent for one model and effort: results/<model>__<effort>/batches.jsonl.
+"""The log of Message Batches sent for one body, model and effort: batches.jsonl next to their responses.jsonl.
 
 One JSON object per line, appended in order while the results directory is locked:
 - "submitting": written just before a batch is sent;

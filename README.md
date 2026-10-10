@@ -144,9 +144,9 @@ requests that failed or were cancelled are billed too, but not saved.
 which costs half the normal price, and waits for the results (usually within an hour, at
 most 24 h). The requests are the same as without `--batch`. Before it sends anything, it
 estimates the cost of the batch from the mean tokens per answer already saved for that model
-and effort. It sends nothing if that estimate plus the cost of all saved answers of that model
-and effort is above `--max-cost`. So query a few points first, e.g. with `--points 20`.
-Each submission is logged in `results/<model>__<effort>/batches.jsonl`. A rerun first waits
+and effort. It sends nothing if that estimate plus the cost of all saved answers of that body,
+model and effort is above `--max-cost`. So query a few points first, e.g. with `--points 20`.
+Each submission is logged in `batches.jsonl` next to the answers. A rerun first waits
 for and collects every batch that is not collected yet, so an interrupted run loses nothing
 and no point that is still in a batch is sent again; queries without `--batch` refuse to run
 until then. Answers that cannot be used (errors, refusals, answers that are not a plain
@@ -160,16 +160,16 @@ out of quota.
 
 The script queries the model, writes the report and prints the cost.
 The Python environment lives in `~/.local/share/venvs/moonmapbench`.
-Every answer is appended to `results/<model>__<effort>/responses.jsonl` as soon as it
-arrives. A rerun only queries missing (lat, lon, sample) entries, so an interrupted run
+Every answer is appended to `<results>/<model>__<effort>/responses.jsonl` as soon as it
+arrives, where `<results>` is `results/` for the Moon and `results/<body>/` for Mars and Mercury. A rerun only queries missing (lat, lon, sample) entries, so an interrupted run
 resumes, and a later grid reuses any pixel centres it shares with an earlier one.
 The ground-truth DEM is downloaded to `data/` on first use and checked by sha256: LOLA for the
 Moon (33 MB), MOLA for Mars (33 MB), the MESSENGER DEM for Mercury (531 MB; the report needs
 about 2 GB of memory for it).
 
-Outputs per run in `results/<model>__<effort>/res<res>_n<samples>/`:
+Outputs per run in `<results>/<model>__<effort>/res<res>_n<samples>/`:
 `metrics.json`, `points.csv` (truth, prediction and raw answers per pixel), `maps.png`,
-`side_by_side.png` (real Moon next to the model's map), `side_by_side_same_res.png`
+`side_by_side.png` (the real body next to the model's map), `side_by_side_same_res.png`
 (the same, with the real Moon at the grid's resolution) and `stacked.png` (the model's map
 above the ground truth at the grid's resolution).
 
