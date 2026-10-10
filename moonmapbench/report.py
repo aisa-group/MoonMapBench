@@ -259,8 +259,8 @@ def main(args: argparse.Namespace) -> None:
     draw_stacked(out / "stacked.png",
                  [(None, None, pred.reshape(shape)), ("Actual map of the Moon", None, truth.reshape(shape))],
                  f"How {MODEL_NAMES.get(args.model, args.model)} sees the Moon",
-                 f"Asked for the elevation in meters at {len(points):,} points.\n"
-                 f"Mean error compared with the actual map is {metrics['mae_m']:,.0f} m "
+                 f"Asked for elevation at {len(points):,} points.\n"
+                 f"Mean error compared to the ground truth is {metrics['mae_m']:,.0f} m "
                  f"({metrics['mae_m'] / METERS_PER_FOOT:,.0f} ft).")
 
     print(json.dumps(metrics, indent=2))
