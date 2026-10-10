@@ -114,12 +114,13 @@ def draw_side_by_side(path, truth_image: np.ndarray, truth_title: str, pred_grid
     plt.close(fig)
 
 
-def _wrap_to_width(fig: plt.Figure, text: str, fontsize: float, max_width_in: float) -> str:
+def _wrap_to_width(fig: plt.Figure, text: str, fontsize: float, max_width_in: float,
+                   fontweight: str = "normal") -> str:
     """Greedy word wrap of each line of `text`, measuring rendered widths."""
     renderer = fig.canvas.get_renderer()
 
     def width_in(candidate: str) -> float:
-        t = fig.text(0, 0, candidate, fontsize=fontsize)
+        t = fig.text(0, 0, candidate, fontsize=fontsize, fontweight=fontweight)
         w = t.get_window_extent(renderer).width / fig.dpi
         t.remove()
         return w
@@ -138,28 +139,36 @@ def _wrap_to_width(fig: plt.Figure, text: str, fontsize: float, max_width_in: fl
     return "\n".join(out)
 
 
-def draw_stacked(path, pred_grid: np.ndarray, truth_grid: np.ndarray, title: str, subtitle: str) -> None:
-    """Model map on top, ground truth below, no axes. Large text so it reads when shared as an image."""
+def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], title: str, subtitle: str) -> None:
+    """Maps stacked top to bottom, no axes. Large text so it reads when shared as an image.
+
+    Each panel is (heading, note, image): the heading is bold above the map's left edge, the note
+    is right-aligned on the same line (same size, so both share a baseline). A first panel without
+    a heading is introduced by the title.
+    """
     width, margin = 10.0, 0.35  # inches
     map_w = width - 2 * margin
     map_h = map_w / 2
     title_pt, subtitle_pt, heading_pt, cbar_label_pt, cbar_tick_pt = 28, 18, 24, 17, 15
     line_in = 1.35 / 72  # line height per point of font size, in inches
     fig = plt.figure(figsize=(width, 1), dpi=150, facecolor=SURFACE)  # height set below
+    title = _wrap_to_width(fig, title, title_pt, map_w, fontweight="bold")
+    n_title = title.count("\n") + 1
     subtitle = _wrap_to_width(fig, subtitle, subtitle_pt, map_w)
     n_sub = subtitle.count("\n") + 1
     # Vertical layout, top to bottom, in inches.
     blocks = [
         ("margin", 0.3),
-        ("title", title_pt * line_in),
+        ("title", n_title * title_pt * line_in),
         ("gap", 0.08),
         ("subtitle", n_sub * subtitle_pt * line_in),
-        ("gap", 0.3),
-        ("map1", map_h),
-        ("gap", 0.3),
-        ("heading", heading_pt * line_in),
-        ("gap", 0.12),
-        ("map2", map_h),
+    ]
+    for i, (heading, _, _) in enumerate(panels):
+        blocks.append(("gap", 0.3))
+        if heading is not None:
+            blocks += [(f"heading{i}", heading_pt * line_in), ("gap", 0.12)]
+        blocks.append((f"map{i}", map_h))
+    blocks += [
         ("gap", 0.35),
         ("cbar", 0.22),
         ("cbar_text", (cbar_tick_pt + cbar_label_pt) * line_in + 0.1),
@@ -180,10 +189,16 @@ def draw_stacked(path, pred_grid: np.ndarray, truth_grid: np.ndarray, title: str
     fig.text(x0, y(top["title"]), title, ha="left", va="top", fontsize=title_pt, fontweight="bold", color=TEXT_PRIMARY)
     fig.text(x0, y(top["subtitle"]), subtitle, ha="left", va="top", fontsize=subtitle_pt, color=TEXT_SECONDARY,
              linespacing=1.25)
-    fig.text(x0, y(top["heading"]), "Ground truth", ha="left", va="top", fontsize=heading_pt, fontweight="bold",
-             color=TEXT_PRIMARY)
-    for name, image in (("map1", pred_grid), ("map2", truth_grid)):
-        ax = fig.add_axes((x0, y(top[name] + map_h), map_w / width, map_h / height))
+    for i, (heading, note, image) in enumerate(panels):
+        if heading is not None:
+            fig.text(x0, y(top[f"heading{i}"]), heading, ha="left", va="top", fontsize=heading_pt, fontweight="bold",
+                     color=TEXT_PRIMARY)
+            if note is not None:
+                fig.text(1 - x0, y(top[f"heading{i}"]), note, ha="right", va="top", fontsize=heading_pt,
+                         color=TEXT_SECONDARY)
+        elif note is not None:
+            raise ValueError("a note needs a heading")
+        ax = fig.add_axes((x0, y(top[f"map{i}"] + map_h), map_w / width, map_h / height))
         im = ax.imshow(image, extent=(-180, 180, -90, 90), cmap="gray", vmin=ELEV_VMIN, vmax=ELEV_VMAX,
                        interpolation="nearest", aspect="equal")
         ax.set_axis_off()
@@ -235,7 +250,7 @@ def main(args: argparse.Namespace) -> None:
                       f"The real Moon (LOLA at {args.res:g}° pixel centres)",
                       pred.reshape(shape), args.res, model_label, metrics["mae_m"], len(points))
 
-    draw_stacked(out / "stacked.png", pred.reshape(shape), truth.reshape(shape),
+    draw_stacked(out / "stacked.png", [(None, None, pred.reshape(shape)), ("Ground truth", None, truth.reshape(shape))],
                  f"How {MODEL_NAMES.get(args.model, args.model)} sees the Moon",
                  f"Asked for the elevation in meters at {len(points):,} points versus ground truth.\n"
                  f"Mean error is {metrics['mae_m']:,.0f} m.")

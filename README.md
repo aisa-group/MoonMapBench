@@ -137,6 +137,10 @@ Outputs per run in `results/<model>__<effort>/res<res>_n<samples>/`:
 (the same, with the real Moon at the grid's resolution) and `stacked.png` (the model's map
 above the ground truth at the grid's resolution).
 
+To put several models above the ground truth in one image, for sharing:
+`uv run python -m moonmapbench.compare --res 2 --runs claude-opus-5-5:low gpt-6.1-sol:low`
+writes `results/compare_res2_n1.png` (needs `UV_PROJECT_ENVIRONMENT` set as in `scripts/run.sh`).
+
 ## License
 
 Code, figures and results are under the MIT license (see `LICENSE`). The ground-truth
