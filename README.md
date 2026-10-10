@@ -76,8 +76,8 @@ repository root (the environment wins):
   `reasoning_effort`, through the official `openai` Python package.
 - Claude models (`claude-*`): `ANTHROPIC_API_KEY`. Queries go to the
   [Messages API](https://platform.claude.com/docs/en/api/messages) with adaptive thinking
-  and `output_config.effort`, through the official `anthropic` Python package. A refusal stops
-  the run; no other model answers in its place.
+  and `output_config.effort`, through the official `anthropic` Python package. A refusal is
+  not saved and stops the run; no other model answers in its place.
 
 ```
 # .env
@@ -91,6 +91,7 @@ scripts/run.sh --res 10 --samples 4 --effort medium
 scripts/run.sh --res 7.5 --concurrency 64                 # fewer parallel requests
 scripts/run.sh --model claude-opus-5-5 --effort low       # Claude Opus 5.5
 scripts/run.sh --model claude-opus-5-5 --points 20        # 20 queries only, as a cheap test
+scripts/run.sh --batch --max-cost 100 --model claude-opus-5-5 --res 2   # Batches API, half price
 ```
 
 `--points N` queries only N grid points, picked at random with a fixed seed, and skips the
@@ -98,6 +99,20 @@ report, which needs the whole grid. At the end the script prints the tokens of a
 answers of that model and effort, and their cost at list price for models in
 `PRICES_PER_MTOK` in `moonmapbench/cost.py`. This is a lower bound on what was spent:
 requests that failed or were cancelled are billed too, but not saved.
+
+`--batch` (Claude models only) sends all missing points as one request to the
+[Message Batches API](https://platform.claude.com/docs/en/build-with-claude/batch-processing),
+which costs half the normal price, and waits for the results (usually within an hour, at
+most 24 h). The requests are the same as without `--batch`. Before it sends anything, it
+estimates the cost of the batch from the mean tokens per answer already saved for that model
+and effort. It sends nothing if that estimate plus the cost of all saved answers of that model
+and effort is above `--max-cost`. So query a few points first, e.g. with `--points 20`.
+Each submission is logged in `results/<model>__<effort>/batches.jsonl`. A rerun first waits
+for and collects every batch that is not collected yet, so an interrupted run loses nothing
+and no point that is still in a batch is sent again; queries without `--batch` refuse to run
+until then. Answers that cannot be used (errors, refusals, answers that are not a plain
+number) are not saved; the run saves the rest and then stops with a list of them, and a rerun
+asks those points again.
 
 Requests run in parallel, up to `--concurrency` (default 256) at a time. When the API
 answers "Too Many Requests" (HTTP 429), the number of requests in flight drops by 20% and

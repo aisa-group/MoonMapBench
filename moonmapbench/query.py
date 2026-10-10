@@ -4,7 +4,8 @@ Answers are appended to results/<model>__<effort>/responses.jsonl, one JSON
 record per (lat, lon, sample). Points already present are skipped, so an
 interrupted run can be restarted and a finer grid reuses any coinciding points.
 An answer that is not a plain number stops the run before it is saved; rerunning
-asks that point again.
+asks that point again. For Claude models, moonmapbench.batch sends the same requests through
+the Message Batches API at half price; this module refuses to run while a batch is not collected.
 
 Claude models (claude-*) go to the Anthropic Messages API with adaptive thinking and
 output_config.effort; all other models go to the OpenAI Chat Completions API with
@@ -34,6 +35,7 @@ import openai
 from dotenv import load_dotenv
 
 from moonmapbench import REPO_ROOT, RESULTS_DIR
+from moonmapbench.batchlog import BATCH_LOG, read_batch_log
 from moonmapbench.grid import grid_points
 from moonmapbench.prompt import build_prompt, parse_elevation
 
@@ -81,6 +83,10 @@ class AdaptiveLimit:
             self._last_cut = now
 
 
+class BadAnswer(RuntimeError):
+    """The API call worked, but the answer cannot be used (wrong model, refusal, truncated, ...)."""
+
+
 def provider_for(model: str) -> str:
     return "anthropic" if model.startswith("claude-") else "openai"
 
@@ -94,28 +100,35 @@ async def create_openai(client: openai.AsyncOpenAI, model: str, effort: str, pro
 def check_served_model(served: str, model: str) -> None:
     """Raises unless `served` is `model`, or `model` with a date suffix (OpenAI names snapshots that way)."""
     if served != model and not served.startswith(f"{model}-20"):
-        raise RuntimeError(f"asked for {model}, but {served} answered")
+        raise BadAnswer(f"asked for {model}, but {served} answered")
 
 
 def answer_openai(completion, model: str, lat: float, lon: float) -> tuple[str, dict]:
     """(answer text, usage). Raises unless the model finished normally with a non-empty answer."""
     check_served_model(completion.model, model)
     if len(completion.choices) != 1:
-        raise RuntimeError(f"expected 1 choice, got {len(completion.choices)}: {completion}")
+        raise BadAnswer(f"expected 1 choice, got {len(completion.choices)}: {completion}")
     choice = completion.choices[0]
     content = choice.message.content
     if (choice.finish_reason != "stop" or not isinstance(content, str) or not content.strip()
             or completion.usage is None):
-        raise RuntimeError(f"bad completion for ({lat}, {lon}): {completion}")
+        raise BadAnswer(f"bad completion for ({lat}, {lon}): {completion}")
     return content, completion.usage.model_dump(exclude_none=True)
 
 
+def anthropic_params(model: str, effort: str, prompt: str) -> dict:
+    """Messages API request, the same for single requests and batches.
+
+    No refusal fallback: an answer from another model would be scored as this model's.
+    """
+    return {
+        "model": model, "max_tokens": ANTHROPIC_MAX_TOKENS, "thinking": {"type": "adaptive"},
+        "output_config": {"effort": effort}, "messages": [{"role": "user", "content": prompt}],
+    }
+
+
 async def create_anthropic(client: anthropic.AsyncAnthropic, model: str, effort: str, prompt: str):
-    # No refusal fallback: an answer from another model would be scored as this model's.
-    return await client.messages.create(
-        model=model, max_tokens=ANTHROPIC_MAX_TOKENS, thinking={"type": "adaptive"},
-        output_config={"effort": effort}, messages=[{"role": "user", "content": prompt}],
-    )
+    return await client.messages.create(**anthropic_params(model, effort, prompt))
 
 
 def answer_anthropic(message, model: str, lat: float, lon: float) -> tuple[str, dict]:
@@ -124,20 +137,25 @@ def answer_anthropic(message, model: str, lat: float, lon: float) -> tuple[str, 
     texts = [block.text for block in message.content if block.type == "text"]
     other = {block.type for block in message.content} - {"text", "thinking", "redacted_thinking"}
     if message.stop_reason != "end_turn" or len(texts) != 1 or not texts[0].strip() or other:
-        raise RuntimeError(f"bad message for ({lat}, {lon}): {message}")
+        raise BadAnswer(f"bad message for ({lat}, {lon}): {message}")
     return texts[0], message.usage.model_dump(exclude_none=True)
 
 
 BACKENDS = {"anthropic": (create_anthropic, answer_anthropic), "openai": (create_openai, answer_openai)}
 
 
-def make_client(provider: str, timeout: float) -> anthropic.AsyncAnthropic | openai.AsyncOpenAI:
-    """Client with SDK retries off: retries happen in query_one, so they can lower the concurrency limit."""
+def load_api_key(provider: str) -> None:
+    """Puts the provider's API key from .env into the environment, unless the environment already has it."""
     load_dotenv(REPO_ROOT / ".env")  # does not override variables already set
     key_var = API_KEY_VARS[provider]
     if not os.environ.get(key_var):
         raise RuntimeError(f"{key_var} is unset or empty. Set it in the environment or in {REPO_ROOT / '.env'} "
                            "(a variable in the environment, even an empty one, hides the one in .env)")
+
+
+def make_client(provider: str, timeout: float) -> anthropic.AsyncAnthropic | openai.AsyncOpenAI:
+    """Client with SDK retries off: retries happen in query_one, so they can lower the concurrency limit."""
+    load_api_key(provider)
     if provider == "anthropic":
         return anthropic.AsyncAnthropic(timeout=timeout, max_retries=0)
     return openai.AsyncOpenAI(timeout=timeout, max_retries=0)
@@ -145,6 +163,32 @@ def make_client(provider: str, timeout: float) -> anthropic.AsyncAnthropic | ope
 
 def run_dir(model: str, effort: str) -> Path:
     return RESULTS_DIR / f"{model}__{effort}"
+
+
+def lock_run_dir(out_dir: Path):
+    """Exclusive lock on a results directory; hold the returned file open while writing to it.
+
+    Two concurrent queries on the same responses.jsonl would write duplicate records.
+    """
+    lock = open(out_dir / ".query.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise RuntimeError(f"another query is already writing to {out_dir}") from None
+    return lock
+
+
+def select_points(res: float, n_points: int | None) -> list[tuple[float, float]]:
+    """The grid's pixel centres, or n_points of them for a cheap test."""
+    points = grid_points(res)
+    if n_points is None:
+        return points
+    if n_points > len(points):
+        raise ValueError(f"--points {n_points} is more than the {len(points)} points of the {res}° grid")
+    # A fixed random order: spread over the whole grid, and --points 2N contains the points of --points N.
+    order = list(range(len(points)))
+    random.Random(0).shuffle(order)
+    return [points[i] for i in sorted(order[:n_points])]
 
 
 def load_responses(path: Path, model: str, effort: str) -> dict[tuple[float, float, int], dict]:
@@ -220,28 +264,20 @@ async def main(args: argparse.Namespace) -> None:
     out_dir = run_dir(args.model, args.effort)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "responses.jsonl"
-    # Two concurrent queries on the same file would write duplicate records.
-    lock = open(out_dir / ".query.lock", "w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise RuntimeError(f"another moonmapbench.query is already writing to {path}") from None
+    lock = lock_run_dir(out_dir)  # held until the process exits
     existing = load_responses(path, args.model, args.effort)
 
-    points = grid_points(args.res)
-    if args.points is not None:
-        if args.points > len(points):
-            raise ValueError(f"--points {args.points} is more than the {len(points)} points of the {args.res}° grid")
-        # A fixed random order: spread over the whole grid, and --points 2N contains the points of --points N.
-        order = list(range(len(points)))
-        random.Random(0).shuffle(order)
-        points = [points[i] for i in sorted(order[:args.points])]
+    points = select_points(args.res, args.points)
     todo = [(lat, lon, s) for lat, lon in points for s in range(args.samples) if (lat, lon, s) not in existing]
     total = len(points) * args.samples
     print(f"{args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples = {total}; "
           f"{total - len(todo)} cached, {len(todo)} to query -> {path}", flush=True)
     if not todo:
         return
+    batches = read_batch_log(out_dir / BATCH_LOG)
+    if batches.pending or batches.unresolved is not None:
+        raise RuntimeError(f"{out_dir / BATCH_LOG} lists batches that are not collected yet. Collect them first "
+                           "with moonmapbench.batch (scripts/run.sh --batch ...), so that no point is paid for twice")
 
     limit = AdaptiveLimit(args.concurrency)
     done = 0
