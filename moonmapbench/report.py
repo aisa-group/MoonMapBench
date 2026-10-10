@@ -31,6 +31,9 @@ from moonmapbench.query import load_responses, run_dir
 # Fixed color range for every map and every run, so images are comparable.
 # About the 0.5th..99.5th area percentile of LOLA heights is -5.7..+6.8 km.
 ELEV_VMIN, ELEV_VMAX = -7000, 7000
+METERS_PER_FOOT = 0.3048  # for US readers of the shareable image
+KM_PER_MILE = 1.609344
+REFERENCE_RADIUS_KM = 1737.4
 SURFACE = "#fcfcfb"
 TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
@@ -69,11 +72,12 @@ def _draw_map(ax: plt.Axes, image: np.ndarray, title: str, title_size: float):
 
 
 def _add_colorbar(fig: plt.Figure, im, rect: tuple[float, float, float, float],
-                  label_size: float = 9, tick_size: float = 8, ticks: list[int] | None = None) -> None:
+                  label_size: float = 9, tick_size: float = 8, ticks: list[int] | None = None,
+                  label: str = f"Elevation relative to {REFERENCE_RADIUS_KM} km (m)") -> None:
     cbar = fig.colorbar(im, cax=fig.add_axes(rect), orientation="horizontal", extend="both")
     if ticks is not None:
         cbar.set_ticks(ticks, labels=[f"{t:,}".replace("-", "\u2212") for t in ticks])
-    cbar.set_label("Elevation relative to 1737.4 km (m)", color=TEXT_SECONDARY, fontsize=label_size)
+    cbar.set_label(label, color=TEXT_SECONDARY, fontsize=label_size)
     cbar.ax.tick_params(colors=TEXT_SECONDARY, labelsize=tick_size, color=AXIS)
     cbar.outline.set_edgecolor(AXIS)
 
@@ -204,7 +208,9 @@ def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], 
         ax.set_axis_off()
     cbar_w = map_w * 0.7
     _add_colorbar(fig, im, ((width - cbar_w) / 2 / width, y(top["cbar"] + 0.22), cbar_w / width, 0.22 / height),
-                  label_size=cbar_label_pt, tick_size=cbar_tick_pt, ticks=[-6000, -3000, 0, 3000, 6000])
+                  label_size=cbar_label_pt, tick_size=cbar_tick_pt, ticks=[-6000, -3000, 0, 3000, 6000],
+                  label=f"Elevation in meters, relative to a {REFERENCE_RADIUS_KM:,} km "
+                        f"({REFERENCE_RADIUS_KM / KM_PER_MILE:,.1f} mi) radius")
     fig.savefig(path, dpi=150, facecolor=SURFACE)
     plt.close(fig)
 
@@ -250,10 +256,12 @@ def main(args: argparse.Namespace) -> None:
                       f"The real Moon (LOLA at {args.res:g}° pixel centres)",
                       pred.reshape(shape), args.res, model_label, metrics["mae_m"], len(points))
 
-    draw_stacked(out / "stacked.png", [(None, None, pred.reshape(shape)), ("Ground truth", None, truth.reshape(shape))],
+    draw_stacked(out / "stacked.png",
+                 [(None, None, pred.reshape(shape)), ("Actual map of the Moon", None, truth.reshape(shape))],
                  f"How {MODEL_NAMES.get(args.model, args.model)} sees the Moon",
-                 f"Asked for the elevation in meters at {len(points):,} points versus ground truth.\n"
-                 f"Mean error is {metrics['mae_m']:,.0f} m.")
+                 f"Asked for the elevation in meters at {len(points):,} points.\n"
+                 f"Mean error compared with the actual map is {metrics['mae_m']:,.0f} m "
+                 f"({metrics['mae_m'] / METERS_PER_FOOT:,.0f} ft).")
 
     print(json.dumps(metrics, indent=2))
     print(f"wrote {out}/metrics.json, points.csv, maps.png, side_by_side.png, side_by_side_same_res.png, stacked.png")

@@ -35,7 +35,7 @@ def main(args: argparse.Namespace) -> None:
         records = load_responses(run_dir(model, effort) / "responses.jsonl", model, effort)
         pred, _ = collect_predictions(records, points, args.samples)
         panels.append((MODEL_NAMES.get(model, model), f"mean error {np.abs(pred - truth).mean():,.0f} m", pred.reshape(shape)))
-    panels.append(("Ground truth", "NASA LRO laser altimeter", truth.reshape(shape)))
+    panels.append(("Actual map of the Moon", "NASA LRO laser altimeter", truth.reshape(shape)))
 
     efforts = {effort for _, effort in args.runs}
     effort_text = f", at {efforts.pop()} reasoning effort" if len(efforts) == 1 else ""
