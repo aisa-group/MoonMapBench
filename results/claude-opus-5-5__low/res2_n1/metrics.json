@@ -1,4 +1,5 @@
 {
+  "body": "moon",
   "model": "claude-opus-5-5",
   "reasoning_effort": "low",
   "res_deg": 2.0,

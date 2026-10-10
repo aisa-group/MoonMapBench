@@ -6,6 +6,7 @@ How does a blind model see the Moon? A Moon version of
 The Earth post asks a model "Land or Water?" at the centre of every pixel of an
 equirectangular lat/lon grid and draws the answers as an image. Here we ask for the
 **lunar elevation in meters** instead and compare it to the real Moon.
+The same works for [Mars and Mercury](#mars-and-mercury).
 
 ## Method
 
@@ -71,6 +72,38 @@ sampled at the same points), [7.5°](results/gpt-6.1-sol__low/res7.5_n1/side_by_
 [22.5°](results/gpt-6.1-sol__low/res22.5_n1/side_by_side.png).
 The 7.5° grid contains every 22.5° pixel centre, so it reused those 128 answers.
 
+## Mars and Mercury
+
+`--body mars` and `--body mercury` ask about Mars or Mercury instead. The grid, samples and
+metric are the same as for the Moon. The prompt differs only in the body and its zero level:
+
+> Say the elevation of this location on Mars in meters, relative to the Martian areoid
+> (the standard zero-elevation datum). If you are unsure, give your best guess. Say only
+> the number. Do not say anything else. 11.25° S, 33.75° W
+
+> Say the elevation of this location on Mercury in meters, relative to Mercury's reference
+> radius of 2439.4 km. If you are unsure, give your best guess. Say only the number.
+> Do not say anything else. 11.25° S, 33.75° W
+
+Ground truth, bilinearly interpolated at each pixel centre as for the Moon:
+
+- **Mars:** MGS MOLA gridded topography
+  [MEGT90N000EB](https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg016/megt90n000eb.lbl)
+  (data set MGS-M-MOLA-5-MEGDR-L3-V1.0, NASA Planetary Data System; 16 pixels/degree,
+  ~3.7 km/pixel), heights above the areoid. Mars is flattened at the poles, so heights relative
+  to a sphere would mostly show that flattening. The elevations that are usually quoted
+  (Olympus Mons about +21 km, the floor of Hellas about −8 km) are heights above the areoid.
+  Latitudes are planetocentric, as in all MOLA products.
+- **Mercury:** USGS MESSENGER global DEM v2
+  ([Becker et al. 2016](https://www.hou.usra.edu/meetings/lpsc2016/pdf/2959.pdf),
+  [product page](https://astrogeology.usgs.gov/search/map/mercury_messenger_global_dem_665m)),
+  made from MESSENGER camera stereo images; 64 pixels/degree, ~665 m/pixel, heights relative to
+  a 2439.4 km sphere. MESSENGER's laser altimeter covered mostly the northern hemisphere,
+  but this stereo DEM covers the whole planet.
+
+Answers and figures go to `results/<body>/<model>__<effort>/`, comparison images to
+`results/<body>/`. The Moon keeps `results/` as before.
+
 ## Running
 
 Needs `uv` and an API key, either in the environment or in a `.env` file in the
@@ -97,6 +130,7 @@ scripts/run.sh --res 7.5 --concurrency 64                 # fewer parallel reque
 scripts/run.sh --model claude-opus-5-5 --effort low       # Claude Opus 5.5
 scripts/run.sh --model claude-opus-5-5 --points 20        # 20 queries only, as a cheap test
 scripts/run.sh --batch --max-cost 100 --model claude-opus-5-5 --res 2   # Batches API, half price
+scripts/run.sh --body mars --res 2                        # Mars instead of the Moon (also: --body mercury)
 ```
 
 `--points N` queries only N grid points, picked at random with a fixed seed, and skips the
@@ -129,7 +163,9 @@ The Python environment lives in `~/.local/share/venvs/moonmapbench`.
 Every answer is appended to `results/<model>__<effort>/responses.jsonl` as soon as it
 arrives. A rerun only queries missing (lat, lon, sample) entries, so an interrupted run
 resumes, and a later grid reuses any pixel centres it shares with an earlier one.
-The LOLA DEM (33 MB) is downloaded to `data/` on first use and checked by sha256.
+The ground-truth DEM is downloaded to `data/` on first use and checked by sha256: LOLA for the
+Moon (33 MB), MOLA for Mars (33 MB), the MESSENGER DEM for Mercury (531 MB; the report needs
+about 2 GB of memory for it).
 
 Outputs per run in `results/<model>__<effort>/res<res>_n<samples>/`:
 `metrics.json`, `points.csv` (truth, prediction and raw answers per pixel), `maps.png`,
@@ -139,12 +175,15 @@ above the ground truth at the grid's resolution).
 
 To put several models above the ground truth in one image, for sharing:
 `uv run python -m moonmapbench.compare --res 2 --runs claude-opus-5-5:low gpt-6.1-sol:low`
-writes `results/compare_res2_n1.png` (needs `UV_PROJECT_ENVIRONMENT` set as in `scripts/run.sh`).
+writes `results/compare_res2_n1.png` (needs `UV_PROJECT_ENVIRONMENT` set as in `scripts/run.sh`;
+add `--body mars` or `--body mercury` for the other bodies).
 With `--difference` it maps each model's answer minus the ground truth instead (red: too high,
 blue: too low) to `results/difference_res2_n1.png`.
 
 ## License
 
 Code, figures and results are under the MIT license (see `LICENSE`). The ground-truth
-heights come from NASA's Planetary Data System and are in the public domain. If you use
-them, please cite the LOLA data set LRO-L-LOLA-4-GDR-V1.0.
+heights are in the public domain: the Moon and Mars from NASA's Planetary Data System,
+Mercury from the USGS. If you use them, please cite the LOLA data set LRO-L-LOLA-4-GDR-V1.0,
+the MOLA data set MGS-M-MOLA-5-MEGDR-L3-V1.0, and for Mercury Becker et al. (2016),
+"First global digital elevation model of Mercury", 47th Lunar and Planetary Science Conference.

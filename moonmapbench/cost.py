@@ -1,14 +1,16 @@
-"""Token usage and cost of all cached answers in results/<model>__<effort>/responses.jsonl.
+"""Token usage and cost of all cached answers of one body, model and effort (their responses.jsonl).
 
 Cost = tokens x list price, halved for answers from the Message Batches API.
 Thinking/reasoning tokens are billed as output tokens and are part of the output counts of
 both APIs. Only models in PRICES_PER_MTOK get a price.
 
     python -m moonmapbench.cost --model claude-opus-5-5 --effort low
+    python -m moonmapbench.cost --body mars --model claude-opus-5-5 --effort low
 """
 
 import argparse
 
+from moonmapbench.bodies import BODIES
 from moonmapbench.query import load_responses, run_dir
 
 # USD per million (input, output) tokens, standard API list prices. Anthropic models only:
@@ -57,15 +59,16 @@ def estimate_batch_cost(model: str, records: dict, n: int) -> float:
 
 
 def main(args: argparse.Namespace) -> None:
-    path = run_dir(args.model, args.effort) / "responses.jsonl"
-    records = load_responses(path, args.model, args.effort)
+    body = BODIES[args.body]
+    path = run_dir(body, args.model, args.effort) / "responses.jsonl"
+    records = load_responses(path, body, args.model, args.effort)
     if not records:
         raise RuntimeError(f"no answers in {path}")
     counts = [tokens(rec["usage"]) for rec in records.values()]
     n = len(counts)
     input_tokens = sum(i for i, _ in counts)
     output_tokens = sum(o for _, o in counts)
-    print(f"{args.model} ({args.effort}): {n} answers, {input_tokens:,} input tokens "
+    print(f"{body.title}, {args.model} ({args.effort}): {n} answers, {input_tokens:,} input tokens "
           f"({input_tokens / n:.0f}/answer), {output_tokens:,} output tokens ({output_tokens / n:.0f}/answer)")
     if args.model not in PRICES_PER_MTOK:
         print(f"cost: unknown, no list price for {args.model} in moonmapbench.cost.PRICES_PER_MTOK")
@@ -83,6 +86,7 @@ def main(args: argparse.Namespace) -> None:
 
 def cli() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--body", choices=BODIES, default="moon", help="which body the answers are about")
     p.add_argument("--model", default="gpt-6.1-sol")
     p.add_argument("--effort", default="low", help="reasoning effort")
     main(p.parse_args())

@@ -1,20 +1,6 @@
-"""Prompt construction and answer parsing.
-
-The prompt mirrors the Earth post ("If this location is over land, say 'Land'. ...
-Do not say anything else. x° S, y° W"), asking for a number instead of Land/Water.
-It depends only on (lat, lon), so cached answers stay valid for any grid that
-contains the same point. Changing PROMPT_TEMPLATE invalidates cached answers;
-query.py refuses to mix prompts within one results file.
-"""
+"""Prompt construction and answer parsing. The prompt templates are in bodies.py."""
 
 import re
-
-PROMPT_TEMPLATE = (
-    "Say the elevation of this location on the Moon in meters, "
-    "relative to the lunar reference radius of 1737.4 km. "
-    "If you are unsure, give your best guess. "
-    "Say only the number. Do not say anything else. {location}"
-)
 
 
 def _format_degrees(value: float) -> str:
@@ -33,8 +19,9 @@ def format_location(lat: float, lon: float) -> str:
     return f"{lat_text}, {lon_text}"
 
 
-def build_prompt(lat: float, lon: float) -> str:
-    return PROMPT_TEMPLATE.format(location=format_location(lat, lon))
+def build_prompt(body, lat: float, lon: float) -> str:
+    """The question about (lat, lon) on `body` (a bodies.Body)."""
+    return body.prompt_template.format(location=format_location(lat, lon))
 
 
 _ANSWER = re.compile(r"^\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:m|meters|metres)?\s*\.?\s*$")

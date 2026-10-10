@@ -1,10 +1,11 @@
 [project]
 name = "moonmapbench"
 version = "0.1.0"
-description = "How does a blind model see the Moon? Query an LLM for lunar elevation on a lat/lon grid and compare to LOLA."
+description = "How does a blind model see the Moon, Mars and Mercury? Query an LLM for elevation on a lat/lon grid and compare to spacecraft elevation maps."
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=1.13.0",
+    "certifi>=2025.1.31",
     "matplotlib>=3.9",
     "numpy>=2.0",
     "openai>=3.27.0",

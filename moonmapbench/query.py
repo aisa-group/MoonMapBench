@@ -1,7 +1,8 @@
-"""Query a model for the elevation at every pixel centre of a grid.
+"""Query a model for the elevation at every pixel centre of a grid, on the Moon, Mars or Mercury.
 
-Answers are appended to results/<model>__<effort>/responses.jsonl, one JSON
-record per (lat, lon, sample). Points already present are skipped, so an
+Answers are appended to <results>/<model>__<effort>/responses.jsonl, one JSON
+record per (lat, lon, sample), where <results> is results/ for the Moon and
+results/<body>/ for the other bodies (see bodies.py). Points already present are skipped, so an
 interrupted run can be restarted and a finer grid reuses any coinciding points.
 An answer that is not a plain number stops the run before it is saved; rerunning
 asks that point again. For Claude models, moonmapbench.batch sends the same requests through
@@ -14,10 +15,11 @@ environment or from .env in the repository root; the environment wins.
 
 The API rate-limits an account. The number of requests in flight adapts
 (AIMD): it starts at --concurrency, drops by 20% when the API answers HTTP 429
-or 529 (Anthropic: overloaded), at most once per 30 s,, and slowly grows back up to --concurrency.
+or 529 (Anthropic: overloaded), at most once per 30 s, and slowly grows back up to --concurrency.
 Running out of quota stops the run.
 
     python -m moonmapbench.query --res 22.5 --samples 1
+    python -m moonmapbench.query --body mars --res 2
 """
 
 import argparse
@@ -34,8 +36,9 @@ import anthropic
 import openai
 from dotenv import load_dotenv
 
-from moonmapbench import REPO_ROOT, RESULTS_DIR
+from moonmapbench import REPO_ROOT
 from moonmapbench.batchlog import BATCH_LOG, read_batch_log
+from moonmapbench.bodies import BODIES, Body
 from moonmapbench.grid import grid_points
 from moonmapbench.prompt import build_prompt, parse_elevation
 
@@ -161,8 +164,8 @@ def make_client(provider: str, timeout: float) -> anthropic.AsyncAnthropic | ope
     return openai.AsyncOpenAI(timeout=timeout, max_retries=0)
 
 
-def run_dir(model: str, effort: str) -> Path:
-    return RESULTS_DIR / f"{model}__{effort}"
+def run_dir(body: Body, model: str, effort: str) -> Path:
+    return body.results_dir / f"{model}__{effort}"
 
 
 def lock_run_dir(out_dir: Path):
@@ -191,7 +194,7 @@ def select_points(res: float, n_points: int | None) -> list[tuple[float, float]]
     return [points[i] for i in sorted(order[:n_points])]
 
 
-def load_responses(path: Path, model: str, effort: str) -> dict[tuple[float, float, int], dict]:
+def load_responses(path: Path, body: Body, model: str, effort: str) -> dict[tuple[float, float, int], dict]:
     """Existing records keyed by (lat, lon, sample). Raises on duplicates or mismatched prompt/model/effort."""
     records: dict[tuple[float, float, int], dict] = {}
     if not path.exists():
@@ -204,19 +207,19 @@ def load_responses(path: Path, model: str, effort: str) -> dict[tuple[float, flo
                 raise RuntimeError(f"{path}:{line_no}: duplicate record for {key}")
             if rec["model"] != model or rec["reasoning_effort"] != effort:
                 raise RuntimeError(f"{path}:{line_no}: record is for {rec['model']}/{rec['reasoning_effort']}")
-            if rec["prompt"] != build_prompt(rec["lat"], rec["lon"]):
+            if rec["prompt"] != build_prompt(body, rec["lat"], rec["lon"]):
                 raise RuntimeError(
-                    f"{path}:{line_no}: stored prompt differs from the current PROMPT_TEMPLATE. "
+                    f"{path}:{line_no}: stored prompt differs from the current prompt template for {body.key}. "
                     "Move the old results away before querying with a new prompt."
                 )
             records[key] = rec
     return records
 
 
-async def query_one(client: anthropic.AsyncAnthropic | openai.AsyncOpenAI, limit: AdaptiveLimit, model: str,
-                    effort: str, lat: float, lon: float, sample: int) -> dict:
+async def query_one(client: anthropic.AsyncAnthropic | openai.AsyncOpenAI, limit: AdaptiveLimit, body: Body,
+                    model: str, effort: str, lat: float, lon: float, sample: int) -> dict:
     create, answer = BACKENDS[provider_for(model)]
-    prompt = build_prompt(lat, lon)
+    prompt = build_prompt(body, lat, lon)
     for attempt in range(1, MAX_ATTEMPTS + 1):
         async with limit:
             start = time.monotonic()
@@ -261,17 +264,18 @@ async def query_one(client: anthropic.AsyncAnthropic | openai.AsyncOpenAI, limit
 
 
 async def main(args: argparse.Namespace) -> None:
-    out_dir = run_dir(args.model, args.effort)
+    body = BODIES[args.body]
+    out_dir = run_dir(body, args.model, args.effort)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "responses.jsonl"
     lock = lock_run_dir(out_dir)  # held until the process exits
-    existing = load_responses(path, args.model, args.effort)
+    existing = load_responses(path, body, args.model, args.effort)
 
     points = select_points(args.res, args.points)
     todo = [(lat, lon, s) for lat, lon in points for s in range(args.samples) if (lat, lon, s) not in existing]
     total = len(points) * args.samples
-    print(f"{args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples = {total}; "
-          f"{total - len(todo)} cached, {len(todo)} to query -> {path}", flush=True)
+    print(f"{body.title}, {args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples "
+          f"= {total}; {total - len(todo)} cached, {len(todo)} to query -> {path}", flush=True)
     if not todo:
         return
     batches = read_batch_log(out_dir / BATCH_LOG)
@@ -287,7 +291,7 @@ async def main(args: argparse.Namespace) -> None:
 
             async def worker(lat: float, lon: float, sample: int) -> None:
                 nonlocal done
-                rec = await query_one(client, limit, args.model, args.effort, lat, lon, sample)
+                rec = await query_one(client, limit, body, args.model, args.effort, lat, lon, sample)
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 done += 1
@@ -302,6 +306,7 @@ async def main(args: argparse.Namespace) -> None:
 
 def cli() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--body", choices=BODIES, default="moon", help="which body to ask about")
     p.add_argument("--res", type=float, default=22.5, help="degrees per pixel (must divide 180)")
     p.add_argument("--samples", type=int, default=1, help="answers per pixel")
     p.add_argument("--model", default="gpt-6.1-sol")

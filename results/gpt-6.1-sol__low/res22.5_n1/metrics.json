@@ -1,4 +1,5 @@
 {
+  "body": "moon",
   "model": "gpt-6.1-sol",
   "reasoning_effort": "low",
   "res_deg": 22.5,

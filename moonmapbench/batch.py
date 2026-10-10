@@ -6,7 +6,7 @@ within 1 h. Before submitting, the cost of the batch is estimated from the mean 
 answer already saved for this model and effort. Nothing is sent if that estimate plus the
 cost of the saved answers is above --max-cost.
 
-Each submission is logged in results/<model>__<effort>/batches.jsonl (see batchlog.py) just
+Each submission is logged in batches.jsonl next to responses.jsonl (see batchlog.py) just
 before and just after it is sent. A rerun first waits for and collects every batch that is
 not collected yet, so it never sends a point that is still in a batch, and an interrupted run
 loses nothing. If a run died while sending, the rerun stops and lists the batches created
@@ -18,6 +18,7 @@ not saved. The good answers of a batch are saved, then the run stops with a list
 failures; a rerun asks those points again.
 
     python -m moonmapbench.batch --res 2 --model claude-opus-5-5 --effort low --max-cost 100
+    python -m moonmapbench.batch --body mars --res 2 --model claude-opus-5-5 --effort low --max-cost 100
 """
 
 import argparse
@@ -31,8 +32,9 @@ from pathlib import Path
 import anthropic
 
 from moonmapbench.batchlog import BATCH_LOG, append_batch_log, read_batch_log
+from moonmapbench.bodies import BODIES, Body
 from moonmapbench.cost import cost, estimate_batch_cost
-from moonmapbench.prompt import PROMPT_TEMPLATE, build_prompt, parse_elevation
+from moonmapbench.prompt import build_prompt, parse_elevation
 from moonmapbench.query import (BadAnswer, anthropic_params, answer_anthropic, load_api_key, load_responses,
                                 lock_run_dir, provider_for, run_dir, select_points)
 
@@ -55,9 +57,9 @@ def parse_custom_id(cid: str) -> tuple[float, float, int]:
     return float(lat.replace("p", ".")), float(lon.replace("p", ".")), int(sample)
 
 
-def params_sha256(model: str, effort: str) -> str:
+def params_sha256(body: Body, model: str, effort: str) -> str:
     """Fingerprint of the request settings and prompt template. Collecting checks that they did not change."""
-    params = anthropic_params(model, effort, PROMPT_TEMPLATE)
+    params = anthropic_params(model, effort, body.prompt_template)
     return hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
 
 
@@ -78,11 +80,11 @@ def wait(client: anthropic.Anthropic, batch_id: str):
         time.sleep(POLL_S)
 
 
-def collect(client: anthropic.Anthropic, entry: dict, model: str, effort: str, existing: dict,
+def collect(client: anthropic.Anthropic, entry: dict, body: Body, model: str, effort: str, existing: dict,
             responses: Path, log: Path) -> list[str]:
     """Waits for a submitted batch, appends its good answers to `responses` and returns the failures."""
     batch_id = entry["batch_id"]
-    if entry["params_sha256"] != params_sha256(model, effort):
+    if entry["params_sha256"] != params_sha256(body, model, effort):
         raise RuntimeError(f"{batch_id} was sent with other request settings or another prompt template "
                            "than the current code would use; its answers would be saved with the wrong prompt")
     batch = wait(client, batch_id)
@@ -120,7 +122,7 @@ def collect(client: anthropic.Anthropic, entry: dict, model: str, effort: str, e
                 "sample": sample,
                 "model": model,
                 "reasoning_effort": effort,
-                "prompt": build_prompt(lat, lon),
+                "prompt": build_prompt(body, lat, lon),
                 "response": content,
                 "usage": usage,
                 "batch_id": batch_id,
@@ -164,12 +166,13 @@ def stop_on_unresolved(client: anthropic.Anthropic, entry: dict, log: Path) -> N
 def main(args: argparse.Namespace) -> None:
     if provider_for(args.model) != "anthropic":
         raise ValueError(f"batches are implemented for Claude models only, not {args.model}")
-    out_dir = run_dir(args.model, args.effort)
+    body = BODIES[args.body]
+    out_dir = run_dir(body, args.model, args.effort)
     out_dir.mkdir(parents=True, exist_ok=True)
     responses = out_dir / "responses.jsonl"
     log = out_dir / BATCH_LOG
     lock = lock_run_dir(out_dir)  # held until the process exits
-    existing = load_responses(responses, args.model, args.effort)
+    existing = load_responses(responses, body, args.model, args.effort)
     load_api_key("anthropic")
     client = anthropic.Anthropic(max_retries=SDK_RETRIES)
 
@@ -178,13 +181,13 @@ def main(args: argparse.Namespace) -> None:
         stop_on_unresolved(client, state.unresolved, log)
     for entry in state.pending:
         print(f"collecting earlier batch {entry['batch_id']}", flush=True)
-        stop_on_failures(collect(client, entry, args.model, args.effort, existing, responses, log))
+        stop_on_failures(collect(client, entry, body, args.model, args.effort, existing, responses, log))
 
     points = select_points(args.res, args.points)
     todo = [(lat, lon, s) for lat, lon in points for s in range(args.samples) if (lat, lon, s) not in existing]
     total = len(points) * args.samples
-    print(f"{args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples = {total}; "
-          f"{total - len(todo)} cached, {len(todo)} to query -> {responses}", flush=True)
+    print(f"{body.title}, {args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples "
+          f"= {total}; {total - len(todo)} cached, {len(todo)} to query -> {responses}", flush=True)
     if not todo:
         return
     if len(todo) > MAX_BATCH_REQUESTS:
@@ -198,10 +201,11 @@ def main(args: argparse.Namespace) -> None:
                            "nothing was sent")
 
     requests = [
-        {"custom_id": custom_id(lat, lon, s), "params": anthropic_params(args.model, args.effort, build_prompt(lat, lon))}
+        {"custom_id": custom_id(lat, lon, s),
+         "params": anthropic_params(args.model, args.effort, build_prompt(body, lat, lon))}
         for lat, lon, s in todo
     ]
-    submission = {"n_requests": len(requests), "params_sha256": params_sha256(args.model, args.effort),
+    submission = {"n_requests": len(requests), "params_sha256": params_sha256(body, args.model, args.effort),
                   "estimated_cost_usd": round(estimate, 2)}
     append_batch_log(log, {"event": "submitting", **submission})
     try:
@@ -215,11 +219,12 @@ def main(args: argparse.Namespace) -> None:
     entry = {"event": "submitted", "batch_id": batch.id, **submission}
     append_batch_log(log, entry)
     print(f"submitted {batch.id} with {len(requests)} requests", flush=True)
-    stop_on_failures(collect(client, entry, args.model, args.effort, existing, responses, log))
+    stop_on_failures(collect(client, entry, body, args.model, args.effort, existing, responses, log))
 
 
 def cli() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--body", choices=BODIES, default="moon", help="which body to ask about")
     p.add_argument("--res", type=float, default=22.5, help="degrees per pixel (must divide 180)")
     p.add_argument("--samples", type=int, default=1, help="answers per pixel")
     p.add_argument("--model", required=True, help="a Claude model, e.g. claude-opus-5-5")
