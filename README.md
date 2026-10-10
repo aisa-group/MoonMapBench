@@ -140,6 +140,8 @@ above the ground truth at the grid's resolution).
 To put several models above the ground truth in one image, for sharing:
 `uv run python -m moonmapbench.compare --res 2 --runs claude-opus-5-5:low gpt-6.1-sol:low`
 writes `results/compare_res2_n1.png` (needs `UV_PROJECT_ENVIRONMENT` set as in `scripts/run.sh`).
+With `--difference` it maps each model's answer minus the ground truth instead (red: too high,
+blue: too low) to `results/difference_res2_n1.png`.
 
 ## License
 

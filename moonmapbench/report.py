@@ -72,7 +72,7 @@ def _draw_map(ax: plt.Axes, image: np.ndarray, title: str, title_size: float):
 
 
 def _add_colorbar(fig: plt.Figure, im, rect: tuple[float, float, float, float],
-                  label_size: float = 9, tick_size: float = 8, ticks: list[int] | None = None,
+                  label_size: float = 9, tick_size: float = 8, ticks: tuple[int, ...] | None = None,
                   label: str = f"Elevation relative to {REFERENCE_RADIUS_KM} km (m)") -> None:
     cbar = fig.colorbar(im, cax=fig.add_axes(rect), orientation="horizontal", extend="both")
     if ticks is not None:
@@ -143,12 +143,18 @@ def _wrap_to_width(fig: plt.Figure, text: str, fontsize: float, max_width_in: fl
     return "\n".join(out)
 
 
-def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], title: str, subtitle: str) -> None:
+ELEVATION_CBAR_LABEL = (f"Elevation in meters, relative to a {REFERENCE_RADIUS_KM:,} km "
+                        f"({REFERENCE_RADIUS_KM / KM_PER_MILE:,.1f} mi) radius")
+
+
+def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], title: str, subtitle: str,
+                 cmap="gray", vlim: tuple[float, float] = (ELEV_VMIN, ELEV_VMAX),
+                 ticks: tuple[int, ...] = (-6000, -3000, 0, 3000, 6000), cbar_label: str = ELEVATION_CBAR_LABEL) -> None:
     """Maps stacked top to bottom, no axes. Large text so it reads when shared as an image.
 
     Each panel is (heading, note, image): the heading is bold above the map's left edge, the note
     is right-aligned on the same line (same size, so both share a baseline). A first panel without
-    a heading is introduced by the title.
+    a heading is introduced by the title. All maps share one color scale (cmap, vlim) and colorbar.
     """
     width, margin = 10.0, 0.35  # inches
     map_w = width - 2 * margin
@@ -203,14 +209,12 @@ def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], 
         elif note is not None:
             raise ValueError("a note needs a heading")
         ax = fig.add_axes((x0, y(top[f"map{i}"] + map_h), map_w / width, map_h / height))
-        im = ax.imshow(image, extent=(-180, 180, -90, 90), cmap="gray", vmin=ELEV_VMIN, vmax=ELEV_VMAX,
+        im = ax.imshow(image, extent=(-180, 180, -90, 90), cmap=cmap, vmin=vlim[0], vmax=vlim[1],
                        interpolation="nearest", aspect="equal")
         ax.set_axis_off()
     cbar_w = map_w * 0.7
     _add_colorbar(fig, im, ((width - cbar_w) / 2 / width, y(top["cbar"] + 0.22), cbar_w / width, 0.22 / height),
-                  label_size=cbar_label_pt, tick_size=cbar_tick_pt, ticks=[-6000, -3000, 0, 3000, 6000],
-                  label=f"Elevation in meters, relative to a {REFERENCE_RADIUS_KM:,} km "
-                        f"({REFERENCE_RADIUS_KM / KM_PER_MILE:,.1f} mi) radius")
+                  label_size=cbar_label_pt, tick_size=cbar_tick_pt, ticks=ticks, label=cbar_label)
     fig.savefig(path, dpi=150, facecolor=SURFACE)
     plt.close(fig)
 
