@@ -36,7 +36,7 @@ TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
 AXIS = "#b9b8b3"
 # Display names for figure titles; other models are shown by their id.
-MODEL_NAMES = {"gpt-6.1-sol": "GPT 6.1 Sol"}
+MODEL_NAMES = {"gpt-6.1-sol": "GPT 6.1 Sol", "claude-opus-5-5": "Claude Opus 5.5"}
 
 
 def collect_predictions(records: dict, points: list[tuple[float, float]], samples: int) -> tuple[np.ndarray, list[list[str]]]:

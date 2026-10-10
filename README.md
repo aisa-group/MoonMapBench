@@ -68,22 +68,43 @@ The 7.5° grid contains every 22.5° pixel centre, so it reused those 128 answer
 
 ## Running
 
-Needs `uv` and an OpenAI API key in `OPENAI_API_KEY`. Queries go to the
-[Chat Completions API](https://platform.openai.com/docs/api-reference/chat) with
-`reasoning_effort`, through the official `openai` Python package.
+Needs `uv` and an API key, either in the environment or in a `.env` file in the
+repository root (the environment wins):
+
+- OpenAI models: `OPENAI_API_KEY`. Queries go to the
+  [Chat Completions API](https://platform.openai.com/docs/api-reference/chat) with
+  `reasoning_effort`, through the official `openai` Python package.
+- Claude models (`claude-*`): `ANTHROPIC_API_KEY`. Queries go to the
+  [Messages API](https://platform.claude.com/docs/en/api/messages) with adaptive thinking
+  and `output_config.effort`, through the official `anthropic` Python package. A refusal stops
+  the run; no other model answers in its place.
+
+```
+# .env
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+```
 
 ```bash
 scripts/run.sh                                   # gpt-6.1-sol, low effort, 22.5°/px, 1 sample
 scripts/run.sh --res 10 --samples 4 --effort medium
 scripts/run.sh --res 7.5 --concurrency 64                 # fewer parallel requests
+scripts/run.sh --model claude-opus-5-5 --effort low       # Claude Opus 5.5
+scripts/run.sh --model claude-opus-5-5 --points 20        # 20 queries only, as a cheap test
 ```
+
+`--points N` queries only N grid points, picked at random with a fixed seed, and skips the
+report, which needs the whole grid. At the end the script prints the tokens of all saved
+answers of that model and effort, and their cost at list price for models in
+`PRICES_PER_MTOK` in `moonmapbench/cost.py`. This is a lower bound on what was spent:
+requests that failed or were cancelled are billed too, but not saved.
 
 Requests run in parallel, up to `--concurrency` (default 256) at a time. When the API
 answers "Too Many Requests" (HTTP 429), the number of requests in flight drops by 20% and
 slowly grows back. Retries wait a random, growing time. A run stops when the account is
 out of quota.
 
-The script queries the model and writes the report.
+The script queries the model, writes the report and prints the cost.
 The Python environment lives in `~/.local/share/venvs/moonmapbench`.
 Every answer is appended to `results/<model>__<effort>/responses.jsonl` as soon as it
 arrives. A rerun only queries missing (lat, lon, sample) entries, so an interrupted run

@@ -6,9 +6,14 @@ interrupted run can be restarted and a finer grid reuses any coinciding points.
 An answer that is not a plain number stops the run before it is saved; rerunning
 asks that point again.
 
-The OpenAI API rate-limits an account. The number of requests in flight adapts
+Claude models (claude-*) go to the Anthropic Messages API with adaptive thinking and
+output_config.effort; all other models go to the OpenAI Chat Completions API with
+reasoning_effort. The API key (ANTHROPIC_API_KEY or OPENAI_API_KEY) comes from the
+environment or from .env in the repository root; the environment wins.
+
+The API rate-limits an account. The number of requests in flight adapts
 (AIMD): it starts at --concurrency, drops by 20% when the API answers HTTP 429
-(at most once per 30 s), and slowly grows back up to --concurrency.
+or 529 (Anthropic: overloaded), at most once per 30 s,, and slowly grows back up to --concurrency.
 Running out of quota stops the run.
 
     python -m moonmapbench.query --res 22.5 --samples 1
@@ -18,21 +23,26 @@ import argparse
 import asyncio
 import fcntl
 import json
+import os
 import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import anthropic
 import openai
+from dotenv import load_dotenv
 
-from moonmapbench import RESULTS_DIR
+from moonmapbench import REPO_ROOT, RESULTS_DIR
 from moonmapbench.grid import grid_points
 from moonmapbench.prompt import build_prompt, parse_elevation
 
 MAX_ATTEMPTS = 8  # with the backoff below, ~6 min of failures before giving up on a point
 BASE_DELAY_S = 5
 MAX_DELAY_S = 120
-RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
+RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}  # 529: Anthropic is overloaded
+ANTHROPIC_MAX_TOKENS = 16000  # thinking + answer; a longer reply stops the run
+API_KEY_VARS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
 class AdaptiveLimit:
@@ -71,6 +81,68 @@ class AdaptiveLimit:
             self._last_cut = now
 
 
+def provider_for(model: str) -> str:
+    return "anthropic" if model.startswith("claude-") else "openai"
+
+
+async def create_openai(client: openai.AsyncOpenAI, model: str, effort: str, prompt: str):
+    return await client.chat.completions.create(
+        model=model, reasoning_effort=effort, messages=[{"role": "user", "content": prompt}]
+    )
+
+
+def check_served_model(served: str, model: str) -> None:
+    """Raises unless `served` is `model`, or `model` with a date suffix (OpenAI names snapshots that way)."""
+    if served != model and not served.startswith(f"{model}-20"):
+        raise RuntimeError(f"asked for {model}, but {served} answered")
+
+
+def answer_openai(completion, model: str, lat: float, lon: float) -> tuple[str, dict]:
+    """(answer text, usage). Raises unless the model finished normally with a non-empty answer."""
+    check_served_model(completion.model, model)
+    if len(completion.choices) != 1:
+        raise RuntimeError(f"expected 1 choice, got {len(completion.choices)}: {completion}")
+    choice = completion.choices[0]
+    content = choice.message.content
+    if (choice.finish_reason != "stop" or not isinstance(content, str) or not content.strip()
+            or completion.usage is None):
+        raise RuntimeError(f"bad completion for ({lat}, {lon}): {completion}")
+    return content, completion.usage.model_dump(exclude_none=True)
+
+
+async def create_anthropic(client: anthropic.AsyncAnthropic, model: str, effort: str, prompt: str):
+    # No refusal fallback: an answer from another model would be scored as this model's.
+    return await client.messages.create(
+        model=model, max_tokens=ANTHROPIC_MAX_TOKENS, thinking={"type": "adaptive"},
+        output_config={"effort": effort}, messages=[{"role": "user", "content": prompt}],
+    )
+
+
+def answer_anthropic(message, model: str, lat: float, lon: float) -> tuple[str, dict]:
+    """(answer text, usage). Raises unless the model finished normally with one non-empty text block."""
+    check_served_model(message.model, model)
+    texts = [block.text for block in message.content if block.type == "text"]
+    other = {block.type for block in message.content} - {"text", "thinking", "redacted_thinking"}
+    if message.stop_reason != "end_turn" or len(texts) != 1 or not texts[0].strip() or other:
+        raise RuntimeError(f"bad message for ({lat}, {lon}): {message}")
+    return texts[0], message.usage.model_dump(exclude_none=True)
+
+
+BACKENDS = {"anthropic": (create_anthropic, answer_anthropic), "openai": (create_openai, answer_openai)}
+
+
+def make_client(provider: str, timeout: float) -> anthropic.AsyncAnthropic | openai.AsyncOpenAI:
+    """Client with SDK retries off: retries happen in query_one, so they can lower the concurrency limit."""
+    load_dotenv(REPO_ROOT / ".env")  # does not override variables already set
+    key_var = API_KEY_VARS[provider]
+    if not os.environ.get(key_var):
+        raise RuntimeError(f"{key_var} is unset or empty. Set it in the environment or in {REPO_ROOT / '.env'} "
+                           "(a variable in the environment, even an empty one, hides the one in .env)")
+    if provider == "anthropic":
+        return anthropic.AsyncAnthropic(timeout=timeout, max_retries=0)
+    return openai.AsyncOpenAI(timeout=timeout, max_retries=0)
+
+
 def run_dir(model: str, effort: str) -> Path:
     return RESULTS_DIR / f"{model}__{effort}"
 
@@ -97,24 +169,25 @@ def load_responses(path: Path, model: str, effort: str) -> dict[tuple[float, flo
     return records
 
 
-async def query_one(client: openai.AsyncOpenAI, limit: AdaptiveLimit, model: str, effort: str,
-                    lat: float, lon: float, sample: int) -> dict:
+async def query_one(client: anthropic.AsyncAnthropic | openai.AsyncOpenAI, limit: AdaptiveLimit, model: str,
+                    effort: str, lat: float, lon: float, sample: int) -> dict:
+    create, answer = BACKENDS[provider_for(model)]
     prompt = build_prompt(lat, lon)
     for attempt in range(1, MAX_ATTEMPTS + 1):
         async with limit:
             start = time.monotonic()
             try:
-                completion = await client.chat.completions.create(
-                    model=model, reasoning_effort=effort, messages=[{"role": "user", "content": prompt}]
-                )
-            except openai.APIConnectionError as e:  # includes timeouts
+                response = await create(client, model, effort, prompt)
+            except (openai.APIConnectionError, anthropic.APIConnectionError) as e:  # includes timeouts
                 error = f"{type(e).__name__}: {e}"
-            except openai.APIStatusError as e:
-                # A 429 for an exhausted quota does not go away by waiting.
-                if e.status_code not in RETRY_STATUS or e.code == "insufficient_quota":
+            except (openai.APIStatusError, anthropic.APIStatusError) as e:
+                # A 429 for an exhausted OpenAI quota does not go away by waiting.
+                # (Anthropic answers an exhausted credit balance with HTTP 400.)
+                if (e.status_code not in RETRY_STATUS
+                        or isinstance(e, openai.APIStatusError) and e.code == "insufficient_quota"):
                     raise RuntimeError(f"HTTP {e.status_code} for ({lat}, {lon}): {e.message[:1000]}") from e
                 error = f"HTTP {e.status_code}: {e.message[:300]}"
-                if e.status_code == 429:
+                if e.status_code in (429, 529):
                     limit.rate_limited()
             else:
                 limit.success()
@@ -127,13 +200,7 @@ async def query_one(client: openai.AsyncOpenAI, limit: AdaptiveLimit, model: str
               f"(limit {int(limit.limit)}): {error}", flush=True)
         await asyncio.sleep(delay)
 
-    if len(completion.choices) != 1:
-        raise RuntimeError(f"expected 1 choice, got {len(completion.choices)}: {completion}")
-    choice = completion.choices[0]
-    content = choice.message.content
-    if (choice.finish_reason != "stop" or not isinstance(content, str) or not content.strip()
-            or completion.usage is None):
-        raise RuntimeError(f"bad completion for ({lat}, {lon}): {completion}")
+    content, usage = answer(response, model, lat, lon)
     parse_elevation(content)  # raises ValueError on anything but a plain number
     return {
         "lat": lat,
@@ -143,7 +210,7 @@ async def query_one(client: openai.AsyncOpenAI, limit: AdaptiveLimit, model: str
         "reasoning_effort": effort,
         "prompt": prompt,
         "response": content,
-        "usage": completion.usage.model_dump(exclude_none=True),
+        "usage": usage,
         "latency_s": round(time.monotonic() - start, 2),
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -162,6 +229,13 @@ async def main(args: argparse.Namespace) -> None:
     existing = load_responses(path, args.model, args.effort)
 
     points = grid_points(args.res)
+    if args.points is not None:
+        if args.points > len(points):
+            raise ValueError(f"--points {args.points} is more than the {len(points)} points of the {args.res}° grid")
+        # A fixed random order: spread over the whole grid, and --points 2N contains the points of --points N.
+        order = list(range(len(points)))
+        random.Random(0).shuffle(order)
+        points = [points[i] for i in sorted(order[:args.points])]
     todo = [(lat, lon, s) for lat, lon in points for s in range(args.samples) if (lat, lon, s) not in existing]
     total = len(points) * args.samples
     print(f"{args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples = {total}; "
@@ -172,8 +246,7 @@ async def main(args: argparse.Namespace) -> None:
     limit = AdaptiveLimit(args.concurrency)
     done = 0
     t0 = time.monotonic()
-    # Reads OPENAI_API_KEY. Retries happen in query_one, so they can lower the concurrency limit.
-    async with openai.AsyncOpenAI(timeout=args.timeout, max_retries=0) as client:
+    async with make_client(provider_for(args.model), args.timeout) as client:
         with open(path, "a", encoding="utf-8") as f:
 
             async def worker(lat: float, lon: float, sample: int) -> None:
@@ -199,6 +272,7 @@ def cli() -> None:
     p.add_argument("--effort", default="low", help="reasoning effort")
     p.add_argument("--concurrency", type=int, default=256, help="maximum parallel requests (adapts down on rate limits)")
     p.add_argument("--timeout", type=float, default=600, help="per-request timeout in seconds")
+    p.add_argument("--points", type=int, help="query only this many grid points, picked at random with a fixed seed (a cheap test)")
     args = p.parse_args()
     if args.samples < 1:
         p.error("--samples must be >= 1")
@@ -206,6 +280,8 @@ def cli() -> None:
         p.error("--concurrency must be >= 1")
     if not args.timeout > 0:
         p.error("--timeout must be > 0")
+    if args.points is not None and args.points < 1:
+        p.error("--points must be >= 1")
     asyncio.run(main(args))
 
 
