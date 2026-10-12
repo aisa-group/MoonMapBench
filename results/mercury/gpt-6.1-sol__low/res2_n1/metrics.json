@@ -1,0 +1,11 @@
+{
+  "body": "mercury",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "low",
+  "res_deg": 2.0,
+  "samples_per_pixel": 1,
+  "n_pixels": 16200,
+  "mae_m": 1103.099112654321,
+  "baseline_zero_mae_m": 941.417399691358,
+  "reference_cell_mean_mae_m": 233.6688291646374
+}

@@ -1,0 +1,11 @@
+{
+  "body": "mars",
+  "model": "gpt-6.1-sol",
+  "reasoning_effort": "low",
+  "res_deg": 2.0,
+  "samples_per_pixel": 1,
+  "n_pixels": 16200,
+  "mae_m": 682.5737345679013,
+  "baseline_zero_mae_m": 2615.5063580246915,
+  "reference_cell_mean_mae_m": 143.19240047381783
+}
