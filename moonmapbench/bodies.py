@@ -10,6 +10,9 @@ asking for a number instead of Land/Water.
 from dataclasses import dataclass
 from pathlib import Path
 
+import matplotlib
+from matplotlib.colors import Colormap, LinearSegmentedColormap
+
 from moonmapbench import RESULTS_DIR
 from moonmapbench.dem import DemFile
 
@@ -33,6 +36,7 @@ class Body:
     datum: str  # colorbar of the detailed figures: "Elevation relative to {datum} (m)"
     datum_long: str  # colorbar of the shareable images: "Elevation in meters, relative to {datum_long}"
     vlim: tuple[int, int]  # color range of every elevation map, the same for every run
+    cmap: Colormap  # of every elevation map, low to high
     ticks: tuple[int, ...]  # colorbar ticks of the shareable images
     error_lim: int  # color range of the difference maps: +-error_lim
     error_ticks: tuple[int, ...]
@@ -61,6 +65,7 @@ MOON = Body(
     datum_long=f"a {1737.4:,} km ({1737.4 / KM_PER_MILE:,.1f} mi) radius",
     # About the 0.5th..99.5th area percentile of LOLA heights is -5.7..+6.8 km.
     vlim=(-7000, 7000),
+    cmap=matplotlib.colormaps["gray"],
     ticks=(-6000, -3000, 0, 3000, 6000),
     error_lim=5000,  # about the 1st..99th percentile of both models' errors at 2°; beyond it the color saturates
     error_ticks=(-4000, -2000, 0, 2000, 4000),
@@ -85,6 +90,8 @@ MARS = Body(
     datum_long="the Martian areoid",
     # The 0.5th..99.5th area percentile of MOLA heights is -6.6..+7.4 km; the big volcanoes saturate.
     vlim=(-8000, 8000),
+    # Dark red-brown to white.
+    cmap=LinearSegmentedColormap.from_list("mars", ["#240a05", "#6b2412", "#a8492a", "#d08a5c", "#ffffff"]),
     ticks=(-8000, -4000, 0, 4000, 8000),
     error_lim=6000,
     error_ticks=(-6000, -3000, 0, 3000, 6000),
@@ -109,6 +116,8 @@ MERCURY = Body(
     datum_long=f"a {2439.4:,} km ({2439.4 / KM_PER_MILE:,.1f} mi) radius",
     # The 0.5th..99.5th area percentile of the DEM's heights is -2.7..+2.8 km.
     vlim=(-3000, 3000),
+    # Dark navy to pale blue-gray.
+    cmap=LinearSegmentedColormap.from_list("mercury", ["#050e26", "#14306b", "#3f6aa8", "#8fb0d6", "#dce6f1"]),
     ticks=(-3000, -1500, 0, 1500, 3000),
     error_lim=3000,
     error_ticks=(-3000, -1500, 0, 1500, 3000),

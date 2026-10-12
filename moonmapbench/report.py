@@ -24,6 +24,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import Colormap
 
 from moonmapbench.bodies import BODIES, Body
 from moonmapbench.dem import Dem, cell_means, elevation_at, load_dem, overview_map
@@ -31,7 +32,7 @@ from moonmapbench.grid import grid_points, grid_shape
 from moonmapbench.prompt import parse_elevation
 from moonmapbench.query import load_responses, run_dir
 
-# Every map of a body has the body's fixed color range (Body.vlim), so images are comparable.
+# Every map of a body has the body's fixed color range and colormap (Body.vlim, Body.cmap), so images are comparable.
 METERS_PER_FOOT = 0.3048  # for US readers of the shareable image
 SURFACE = "#fcfcfb"
 TEXT_PRIMARY = "#0b0b0b"
@@ -61,9 +62,9 @@ def _style_map_axes(ax: plt.Axes) -> None:
         spine.set_linewidth(0.8)
 
 
-def _draw_map(ax: plt.Axes, image: np.ndarray, title: str, title_size: float, vlim: tuple[float, float]):
+def _draw_map(ax: plt.Axes, image: np.ndarray, title: str, title_size: float, body: Body):
     ax.set_facecolor(SURFACE)
-    im = ax.imshow(image, extent=(-180, 180, -90, 90), cmap="gray", vmin=vlim[0], vmax=vlim[1],
+    im = ax.imshow(image, extent=(-180, 180, -90, 90), cmap=body.cmap, vmin=body.vlim[0], vmax=body.vlim[1],
                    interpolation="nearest", aspect="equal")
     ax.set_title(title, loc="left", fontsize=title_size, color=TEXT_PRIMARY, pad=6)
     _style_map_axes(ax)
@@ -90,7 +91,7 @@ def draw_maps(path, body: Body, dem: Dem, truth_grid: np.ndarray, pred_grid: np.
     ]
     fig, axes = plt.subplots(len(panels), 1, figsize=(8, 12.6), facecolor=SURFACE)
     for ax, (image, title) in zip(axes, panels):
-        im = _draw_map(ax, image, title, 11, body.vlim)
+        im = _draw_map(ax, image, title, 11, body)
     fig.suptitle(f"How does {model_label} see {body.name}?", x=0.06, ha="left", fontsize=15, color=TEXT_PRIMARY, y=0.985)
     fig.text(0.06, 0.957,
              f"Mean absolute error {mae:,.0f} m over {n_points} pixels  ·  always answering 0 m: {zero_mae:,.0f} m",
@@ -105,8 +106,8 @@ def draw_side_by_side(path, body: Body, truth_image: np.ndarray, truth_title: st
                       model_label: str, mae: float, n_points: int) -> None:
     """The real body and the model's map next to each other."""
     fig, (left, right) = plt.subplots(1, 2, figsize=(16, 5.4), facecolor=SURFACE)
-    _draw_map(left, truth_image, truth_title, 13, body.vlim)
-    im = _draw_map(right, pred_grid, f"{model_label}, blind ({res:g}° pixels)", 13, body.vlim)
+    _draw_map(left, truth_image, truth_title, 13, body)
+    im = _draw_map(right, pred_grid, f"{model_label}, blind ({res:g}° pixels)", 13, body)
     fig.suptitle(f"How does {model_label} see {body.name}?", x=0.04, ha="left", fontsize=17, color=TEXT_PRIMARY, y=0.97)
     fig.text(0.04, 0.885, f"Mean absolute error {mae:,.0f} m over {n_points} pixels",
              ha="left", fontsize=11, color=TEXT_SECONDARY)
@@ -150,7 +151,7 @@ def elevation_cbar_label(body: Body) -> str:
 
 
 def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], title: str, subtitle: str,
-                 vlim: tuple[float, float], ticks: tuple[int, ...], cbar_label: str, cmap="gray") -> None:
+                 vlim: tuple[float, float], ticks: tuple[int, ...], cbar_label: str, cmap: Colormap) -> None:
     """Maps stacked top to bottom, no axes. Large text so it reads when shared as an image.
 
     Each panel is (heading, note, image): the heading is bold above the map's left edge, the note
@@ -272,7 +273,7 @@ def main(args: argparse.Namespace) -> None:
                  f"Asked for elevation at {len(points):,} points.\n"
                  f"Mean error compared to the ground truth is {metrics['mae_m']:,.0f} m "
                  f"({metrics['mae_m'] / METERS_PER_FOOT:,.0f} ft).",
-                 vlim=body.vlim, ticks=body.ticks, cbar_label=elevation_cbar_label(body))
+                 vlim=body.vlim, ticks=body.ticks, cbar_label=elevation_cbar_label(body), cmap=body.cmap)
 
     print(json.dumps(metrics, indent=2))
     print(f"wrote {out}/metrics.json, points.csv, maps.png, side_by_side.png, side_by_side_same_res.png, stacked.png")

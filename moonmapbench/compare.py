@@ -74,7 +74,7 @@ def main(args: argparse.Namespace) -> None:
                 f"{np.abs(truth).mean():,.0f} m.")
     out = body.results_dir / f"compare_res{args.res:g}_n{args.samples}.png"
     draw_stacked(out, panels, args.title or f"How AI models see {body.name}", subtitle,
-                 vlim=body.vlim, ticks=body.ticks, cbar_label=elevation_cbar_label(body))
+                 vlim=body.vlim, ticks=body.ticks, cbar_label=elevation_cbar_label(body), cmap=body.cmap)
     print(f"wrote {out}")
 
 
