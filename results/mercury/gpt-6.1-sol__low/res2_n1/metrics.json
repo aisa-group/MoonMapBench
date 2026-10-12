@@ -3,6 +3,7 @@
   "model": "gpt-6.1-sol",
   "reasoning_effort": "low",
   "res_deg": 2.0,
+  "stride": 1,
   "samples_per_pixel": 1,
   "n_pixels": 16200,
   "mae_m": 1103.099112654321,

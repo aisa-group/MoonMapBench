@@ -3,6 +3,7 @@
   "model": "claude-opus-5-5",
   "reasoning_effort": "low",
   "res_deg": 18.0,
+  "stride": 1,
   "samples_per_pixel": 1,
   "n_pixels": 200,
   "mae_m": 1300.725,
