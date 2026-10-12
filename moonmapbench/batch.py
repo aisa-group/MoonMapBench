@@ -34,9 +34,10 @@ import anthropic
 from moonmapbench.batchlog import BATCH_LOG, append_batch_log, read_batch_log
 from moonmapbench.bodies import BODIES, Body
 from moonmapbench.cost import cost, estimate_batch_cost
+from moonmapbench.grid import grid_shape
 from moonmapbench.prompt import build_prompt, parse_elevation
 from moonmapbench.query import (BadAnswer, anthropic_params, answer_anthropic, load_api_key, load_responses,
-                                lock_run_dir, provider_for, run_dir, select_points)
+                                lock_run_dir, provider_for, run_dir, select_points, stop_on_failures)
 
 POLL_S = 60
 REPORT_EVERY_S = 600  # print the batch status at least this often while waiting
@@ -122,7 +123,7 @@ def collect(client: anthropic.Anthropic, entry: dict, body: Body, model: str, ef
                 "sample": sample,
                 "model": model,
                 "reasoning_effort": effort,
-                "prompt": build_prompt(body, lat, lon),
+                "prompt": build_prompt(body, model, lat, lon),
                 "response": content,
                 "usage": usage,
                 "batch_id": batch_id,
@@ -137,12 +138,6 @@ def collect(client: anthropic.Anthropic, entry: dict, body: Body, model: str, ef
     append_batch_log(log, {"event": "collected", "batch_id": batch_id, "saved": saved, "failed": len(failures)})
     print(f"{batch_id}: saved {saved} answers, {len(failures)} failed", flush=True)
     return failures
-
-
-def stop_on_failures(failures: list[str]) -> None:
-    if failures:
-        shown = "\n  ".join(failures[:20])
-        raise RuntimeError(f"{len(failures)} answers failed and were not saved (rerun to ask again):\n  {shown}")
 
 
 def stop_on_unresolved(client: anthropic.Anthropic, entry: dict, log: Path) -> None:
@@ -167,6 +162,7 @@ def main(args: argparse.Namespace) -> None:
     if provider_for(args.model) != "anthropic":
         raise ValueError(f"batches are implemented for Claude models only, not {args.model}")
     body = BODIES[args.body]
+    grid_shape(args.res, args.stride)  # raises on a bad grid before anything is created or collected
     out_dir = run_dir(body, args.model, args.effort)
     out_dir.mkdir(parents=True, exist_ok=True)
     responses = out_dir / "responses.jsonl"
@@ -183,10 +179,11 @@ def main(args: argparse.Namespace) -> None:
         print(f"collecting earlier batch {entry['batch_id']}", flush=True)
         stop_on_failures(collect(client, entry, body, args.model, args.effort, existing, responses, log))
 
-    points = select_points(args.res, args.points)
+    points = select_points(args.res, args.stride, args.points)
     todo = [(lat, lon, s) for lat, lon in points for s in range(args.samples) if (lat, lon, s) not in existing]
     total = len(points) * args.samples
-    print(f"{body.title}, {args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples "
+    print(f"{body.title}, {args.model} ({args.effort}), {args.res}°/px, stride {args.stride}: "
+          f"{len(points)} points x {args.samples} samples "
           f"= {total}; {total - len(todo)} cached, {len(todo)} to query -> {responses}", flush=True)
     if not todo:
         return
@@ -202,7 +199,7 @@ def main(args: argparse.Namespace) -> None:
 
     requests = [
         {"custom_id": custom_id(lat, lon, s),
-         "params": anthropic_params(args.model, args.effort, build_prompt(body, lat, lon))}
+         "params": anthropic_params(args.model, args.effort, build_prompt(body, args.model, lat, lon))}
         for lat, lon, s in todo
     ]
     submission = {"n_requests": len(requests), "params_sha256": params_sha256(body, args.model, args.effort),
@@ -226,6 +223,7 @@ def cli() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--body", choices=BODIES, default="moon", help="which body to ask about")
     p.add_argument("--res", type=float, default=22.5, help="degrees per pixel (must divide 180)")
+    p.add_argument("--stride", type=int, default=1, help="query every STRIDE-th row and column of the grid (see grid.py)")
     p.add_argument("--samples", type=int, default=1, help="answers per pixel")
     p.add_argument("--model", required=True, help="a Claude model, e.g. claude-opus-5-5")
     p.add_argument("--effort", default="low", help="reasoning effort")

@@ -129,7 +129,7 @@ def cell_means(dem: Dem, res: float) -> np.ndarray:
 
     Cell edges must fall on DEM pixel edges (res a multiple of 1/ppd degree).
     """
-    rows, cols = grid_shape(res)
+    rows, cols = grid_shape(res, 1)
     k = res * dem.ppd
     if abs(k - round(k)) > 1e-9:
         raise ValueError(f"resolution {res} is not a multiple of 1/{dem.ppd} degree")

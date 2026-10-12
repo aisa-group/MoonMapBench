@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Query a model on the lat/lon grid, score it against the ground truth (LOLA for the Moon) and print the
 # tokens and cost of all saved answers.
-# Usage: scripts/run.sh [--body moon|mars|mercury] [--res 22.5] [--samples 1] [--model gpt-6.1-sol] [--effort low]
+# Usage: scripts/run.sh [--body moon|mars|mercury] [--res 22.5] [--stride 1] [--samples 1] [--model gpt-6.1-sol] [--effort low]
 #                       [--concurrency 256] [--timeout 600] [--points N]
-#        scripts/run.sh --batch --max-cost USD [--body ...] [--res ...] [--samples ...] [--model claude-...] [--effort ...] [--points N]
-# Claude models (claude-*) need ANTHROPIC_API_KEY, others OPENAI_API_KEY, in the environment or in .env.
+#        scripts/run.sh --batch --max-cost USD [--body ...] [--res ...] [--stride ...] [--samples ...] [--model claude-...] [--effort ...] [--points N]
+# Claude models (claude-*) need ANTHROPIC_API_KEY, Grok models (grok-*) XAI_API_KEY, others OPENAI_API_KEY,
+# in the environment or in .env.
 # Cached answers in results/<model>__<effort>/responses.jsonl (the Moon) or results/<body>/<model>__<effort>/responses.jsonl
 # are reused.
 # --points N queries only N grid points, picked at random with a fixed seed (a cheap test), and skips the report.
@@ -21,7 +22,7 @@ partial=0
 query_module=moonmapbench.query
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --res|--samples) query_args+=("$1" "$2"); report_args+=("$1" "$2"); shift 2 ;;
+        --res|--stride|--samples) query_args+=("$1" "$2"); report_args+=("$1" "$2"); shift 2 ;;
         --body|--model|--effort) query_args+=("$1" "$2"); report_args+=("$1" "$2"); cost_args+=("$1" "$2"); shift 2 ;;
         --concurrency|--timeout) query_args+=("$1" "$2"); shift 2 ;;
         --points) query_args+=("$1" "$2"); partial=1; shift 2 ;;

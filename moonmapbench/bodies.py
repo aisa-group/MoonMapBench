@@ -1,7 +1,8 @@
 """The bodies a model can be asked about: prompt, ground-truth DEM and the labels of the figures.
 
 Each prompt depends only on (lat, lon), so cached answers stay valid for any grid that contains
-the same point. Changing a prompt template invalidates the cached answers of that body;
+the same point. Grok models get a more insistent best-guess sentence (see prompt.py).
+Changing a prompt template invalidates the cached answers of that body;
 query.py refuses to mix prompts within one results file. The prompts mirror the Earth post
 ("If this location is over land, say 'Land'. ... Do not say anything else. x° S, y° W"),
 asking for a number instead of Land/Water.

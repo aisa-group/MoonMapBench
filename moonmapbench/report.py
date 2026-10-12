@@ -1,17 +1,19 @@
 """Score a run against the body's ground-truth DEM (LOLA for the Moon) and draw the maps.
 
-Metric: mean absolute error (MAE) in meters, averaged over all pixels of the grid.
+Metric: mean absolute error (MAE) in meters, averaged over all queried pixels of the grid.
 For reference we also report the MAE of always answering 0 m (the reference surface),
 and the MAE of answering each pixel's exact cell-average elevation: the truth is the
 height at the pixel centre, so even a model that knew every cell's average would not
-score 0.
+score 0. With --stride, the cell is the `res` cell of the queried point, not the block it stands for.
 With several samples per pixel the prediction is their mean, as the Earth post
 averaged its samples per pixel.
 
 Writes <results>/<model>__<effort>/res<res>_n<samples>/{metrics.json, points.csv, maps.png, side_by_side*.png,
 stacked.png}, where <results> is results/ for the Moon and results/<body>/ for the other bodies.
+With --stride k > 1 the directory is res<res>_stride<k>_n<samples>.
 
     python -m moonmapbench.report --res 22.5 --samples 1
+    python -m moonmapbench.report --res 2 --stride 2 --model grok-4.7 --effort low
     python -m moonmapbench.report --body mars --res 2
 """
 
@@ -28,7 +30,7 @@ from matplotlib.colors import Colormap
 
 from moonmapbench.bodies import BODIES, Body
 from moonmapbench.dem import Dem, cell_means, elevation_at, load_dem, overview_map
-from moonmapbench.grid import grid_points, grid_shape
+from moonmapbench.grid import grid_name, grid_points, grid_shape
 from moonmapbench.prompt import parse_elevation
 from moonmapbench.query import load_responses, run_dir
 
@@ -38,8 +40,12 @@ SURFACE = "#fcfcfb"
 TEXT_PRIMARY = "#0b0b0b"
 TEXT_SECONDARY = "#52514e"
 AXIS = "#b9b8b3"
+# The highlighted line of the shareable image (the mean error): dark red on a light red rounded box.
+HIGHLIGHT_TEXT = "#9b2f2c"
+HIGHLIGHT_FILL = "#fbe1de"
+HIGHLIGHT_PAD = 0.35  # box padding, in units of the font size
 # Display names for figure titles; other models are shown by their id.
-MODEL_NAMES = {"gpt-6.1-sol": "GPT 6.1 Sol", "claude-opus-5-5": "Claude Opus 5.5"}
+MODEL_NAMES = {"gpt-6.1-sol": "GPT 6.1 Sol", "claude-opus-5-5": "Claude Opus 5.5", "grok-4.7": "Grok 4.7"}
 
 
 def collect_predictions(records: dict, points: list[tuple[float, float]], samples: int) -> tuple[np.ndarray, list[list[str]]]:
@@ -81,13 +87,18 @@ def _add_colorbar(fig: plt.Figure, im, rect: tuple[float, float, float, float], 
     cbar.outline.set_edgecolor(AXIS)
 
 
-def draw_maps(path, body: Body, dem: Dem, truth_grid: np.ndarray, pred_grid: np.ndarray, res: float,
+def points_text(res: float, stride: int) -> str:
+    """Where the grid was queried, for figure titles."""
+    return f"{res:g}° pixel centres" if stride == 1 else f"{res:g}° pixel centres {res * stride:g}° apart"
+
+
+def draw_maps(path, body: Body, dem: Dem, truth_grid: np.ndarray, pred_grid: np.ndarray, res: float, stride: int,
               model_label: str, mae: float, zero_mae: float, n_points: int) -> None:
     """Three stacked maps: the DEM at 0.5°, the DEM at the query points, model prediction."""
     panels = [
         (overview_map(dem, 0.5), f"{body.title} ({body.dem_short}, 0.5° pixels)"),
-        (truth_grid, f"{body.title} ({body.dem_short} at {res:g}° pixel centres)"),
-        (pred_grid, f"{model_label}, blind ({res:g}° pixels)"),
+        (truth_grid, f"{body.title} ({body.dem_short} at {points_text(res, stride)})"),
+        (pred_grid, f"{model_label}, blind ({res * stride:g}° pixels)"),
     ]
     fig, axes = plt.subplots(len(panels), 1, figsize=(8, 12.6), facecolor=SURFACE)
     for ax, (image, title) in zip(axes, panels):
@@ -102,12 +113,12 @@ def draw_maps(path, body: Body, dem: Dem, truth_grid: np.ndarray, pred_grid: np.
     plt.close(fig)
 
 
-def draw_side_by_side(path, body: Body, truth_image: np.ndarray, truth_title: str, pred_grid: np.ndarray, res: float,
-                      model_label: str, mae: float, n_points: int) -> None:
+def draw_side_by_side(path, body: Body, truth_image: np.ndarray, truth_title: str, pred_grid: np.ndarray,
+                      pixel_deg: float, model_label: str, mae: float, n_points: int) -> None:
     """The real body and the model's map next to each other."""
     fig, (left, right) = plt.subplots(1, 2, figsize=(16, 5.4), facecolor=SURFACE)
     _draw_map(left, truth_image, truth_title, 13, body)
-    im = _draw_map(right, pred_grid, f"{model_label}, blind ({res:g}° pixels)", 13, body)
+    im = _draw_map(right, pred_grid, f"{model_label}, blind ({pixel_deg:g}° pixels)", 13, body)
     fig.suptitle(f"How does {model_label} see {body.name}?", x=0.04, ha="left", fontsize=17, color=TEXT_PRIMARY, y=0.97)
     fig.text(0.04, 0.885, f"Mean absolute error {mae:,.0f} m over {n_points} pixels",
              ha="left", fontsize=11, color=TEXT_SECONDARY)
@@ -127,7 +138,8 @@ def _text_width_in(fig: plt.Figure, text: str, fontsize: float, fontweight: str 
 
 def _wrap_to_width(fig: plt.Figure, text: str, fontsize: float, max_width_in: float,
                    fontweight: str = "normal") -> str:
-    """Greedy word wrap of each line of `text`, measuring rendered widths."""
+    """Greedy word wrap of each line of `text`, measuring rendered widths. Breaks only at plain spaces,
+    so a no-break space (\u00a0) keeps two words together."""
 
     def width_in(candidate: str) -> float:
         return _text_width_in(fig, candidate, fontsize, fontweight)
@@ -135,7 +147,7 @@ def _wrap_to_width(fig: plt.Figure, text: str, fontsize: float, max_width_in: fl
     out = []
     for paragraph in text.split("\n"):
         line = ""
-        for word in paragraph.split():
+        for word in (w for w in paragraph.split(" ") if w):
             candidate = f"{line} {word}".strip()
             if line and width_in(candidate) > max_width_in:
                 out.append(line)
@@ -151,8 +163,11 @@ def elevation_cbar_label(body: Body) -> str:
 
 
 def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], title: str, subtitle: str,
-                 vlim: tuple[float, float], ticks: tuple[int, ...], cbar_label: str, cmap: Colormap) -> None:
+                 highlight: str | None, vlim: tuple[float, float], ticks: tuple[int, ...], cbar_label: str,
+                 cmap: Colormap) -> None:
     """Maps stacked top to bottom, no axes. Large text so it reads when shared as an image.
+
+    `highlight`, if given, goes below the subtitle in bold dark red on a light red box.
 
     Each panel is (heading, note, image): the heading is bold above the map's left edge, the note
     is right-aligned on the same line (same size, so both share a baseline). A first panel without
@@ -175,6 +190,10 @@ def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], 
         ("gap", 0.08),
         ("subtitle", n_sub * subtitle_pt * line_in),
     ]
+    pad_in = HIGHLIGHT_PAD * subtitle_pt / 72
+    if highlight is not None:
+        highlight = _wrap_to_width(fig, highlight, subtitle_pt, map_w - 2 * pad_in, fontweight="bold")
+        blocks += [("gap", 0.06), ("highlight", (highlight.count("\n") + 1) * subtitle_pt * line_in + 2 * pad_in)]
     for i, (heading, _, _) in enumerate(panels):
         blocks.append(("gap", 0.3))
         if heading is not None:
@@ -201,6 +220,10 @@ def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], 
     fig.text(x0, y(top["title"]), title, ha="left", va="top", fontsize=title_pt, fontweight="bold", color=TEXT_PRIMARY)
     fig.text(x0, y(top["subtitle"]), subtitle, ha="left", va="top", fontsize=subtitle_pt, color=TEXT_SECONDARY,
              linespacing=1.25)
+    if highlight is not None:  # the box's left edge on the margin
+        fig.text(x0 + pad_in / width, y(top["highlight"] + pad_in), highlight, ha="left", va="top",
+                 fontsize=subtitle_pt, fontweight="bold", color=HIGHLIGHT_TEXT, linespacing=1.25,
+                 bbox=dict(boxstyle=f"round,pad={HIGHLIGHT_PAD}", fc=HIGHLIGHT_FILL, ec="none"))
     for i, (heading, note, image) in enumerate(panels):
         if heading is not None:
             fig.text(x0, y(top[f"heading{i}"]), heading, ha="left", va="top", fontsize=heading_pt, fontweight="bold",
@@ -227,7 +250,7 @@ def draw_stacked(path, panels: list[tuple[str | None, str | None, np.ndarray]], 
 def main(args: argparse.Namespace) -> None:
     body = BODIES[args.body]
     records = load_responses(run_dir(body, args.model, args.effort) / "responses.jsonl", body, args.model, args.effort)
-    points = grid_points(args.res)
+    points = grid_points(args.res, args.stride)
     pred, answers = collect_predictions(records, points, args.samples)
 
     dem = load_dem(body.dem)
@@ -241,14 +264,16 @@ def main(args: argparse.Namespace) -> None:
         "model": args.model,
         "reasoning_effort": args.effort,
         "res_deg": args.res,
+        "stride": args.stride,
         "samples_per_pixel": args.samples,
         "n_pixels": len(points),
         "mae_m": float(abs_err.mean()),
         "baseline_zero_mae_m": float(np.abs(truth).mean()),
-        "reference_cell_mean_mae_m": float(np.abs(cell_means(dem, args.res).ravel() - truth).mean()),
+        "reference_cell_mean_mae_m": float(np.abs(
+            cell_means(dem, args.res)[::args.stride, ::args.stride].ravel() - truth).mean()),
     }
 
-    out = run_dir(body, args.model, args.effort) / f"res{args.res:g}_n{args.samples}"
+    out = run_dir(body, args.model, args.effort) / f"{grid_name(args.res, args.stride)}_n{args.samples}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
     with open(out / "points.csv", "w", newline="", encoding="utf-8") as f:
@@ -257,22 +282,22 @@ def main(args: argparse.Namespace) -> None:
         for (lat, lon), t, p, e, texts in zip(points, truth, pred, abs_err, answers):
             w.writerow([lat, lon, round(float(t), 1), round(float(p), 1), round(float(e), 1), " | ".join(texts)])
 
-    shape = grid_shape(args.res)
+    shape = grid_shape(args.res, args.stride)
     model_label = f"{args.model} ({args.effort})"
-    draw_maps(out / "maps.png", body, dem, truth.reshape(shape), pred.reshape(shape), args.res,
+    pixel_deg = args.res * args.stride
+    draw_maps(out / "maps.png", body, dem, truth.reshape(shape), pred.reshape(shape), args.res, args.stride,
               model_label, metrics["mae_m"], metrics["baseline_zero_mae_m"], len(points))
     draw_side_by_side(out / "side_by_side.png", body, overview_map(dem, 0.5), f"{body.real_title} ({body.dem_short})",
-                      pred.reshape(shape), args.res, model_label, metrics["mae_m"], len(points))
+                      pred.reshape(shape), pixel_deg, model_label, metrics["mae_m"], len(points))
     draw_side_by_side(out / "side_by_side_same_res.png", body, truth.reshape(shape),
-                      f"{body.real_title} ({body.dem_short} at {args.res:g}° pixel centres)",
-                      pred.reshape(shape), args.res, model_label, metrics["mae_m"], len(points))
+                      f"{body.real_title} ({body.dem_short} at {points_text(args.res, args.stride)})",
+                      pred.reshape(shape), pixel_deg, model_label, metrics["mae_m"], len(points))
 
     draw_stacked(out / "stacked.png",
                  [(None, None, pred.reshape(shape)), (f"Actual map of {body.name}", None, truth.reshape(shape))],
                  f"How {MODEL_NAMES.get(args.model, args.model)} sees {body.name}",
-                 f"Asked for elevation at {len(points):,} points.\n"
-                 f"Mean error compared to the ground truth is {metrics['mae_m']:,.0f} m "
-                 f"({metrics['mae_m'] / METERS_PER_FOOT:,.0f} ft).",
+                 f"Asked for elevation at {len(points):,} points.",
+                 f"Mean error: {metrics['mae_m']:,.0f} m ({metrics['mae_m'] / METERS_PER_FOOT:,.0f} ft)",
                  vlim=body.vlim, ticks=body.ticks, cbar_label=elevation_cbar_label(body), cmap=body.cmap)
 
     print(json.dumps(metrics, indent=2))
@@ -283,6 +308,7 @@ def cli() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--body", choices=BODIES, default="moon", help="which body the answers are about")
     p.add_argument("--res", type=float, default=22.5, help="degrees per pixel (must divide 180)")
+    p.add_argument("--stride", type=int, default=1, help="score every STRIDE-th row and column of the grid (see grid.py)")
     p.add_argument("--samples", type=int, default=1, help="answers per pixel to average")
     p.add_argument("--model", default="gpt-6.1-sol")
     p.add_argument("--effort", default="low", help="reasoning effort")

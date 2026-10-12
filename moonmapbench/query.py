@@ -4,13 +4,17 @@ Answers are appended to <results>/<model>__<effort>/responses.jsonl, one JSON
 record per (lat, lon, sample), where <results> is results/ for the Moon and
 results/<body>/ for the other bodies (see bodies.py). Points already present are skipped, so an
 interrupted run can be restarted and a finer grid reuses any coinciding points.
-An answer that is not a plain number stops the run before it is saved; rerunning
-asks that point again. For Claude models, moonmapbench.batch sends the same requests through
-the Message Batches API at half price; this module refuses to run while a batch is not collected.
+Answers that are not a plain number ("I don't know.") are not saved; the run saves the rest
+and then stops with a list of them, and a rerun asks those points again. Any other unusable
+answer (wrong model, truncated, a refusal stop reason) and API errors that retrying does not fix
+stop the run at once: they would likely hit every request. For Claude models, moonmapbench.batch
+sends the same requests through the Message Batches API at half price; this module refuses to
+run while a batch is not collected.
 
 Claude models (claude-*) go to the Anthropic Messages API with adaptive thinking and
-output_config.effort; all other models go to the OpenAI Chat Completions API with
-reasoning_effort. The API key (ANTHROPIC_API_KEY or OPENAI_API_KEY) comes from the
+output_config.effort; Grok models (grok-*) go to xAI's OpenAI-compatible Chat Completions API
+and all other models to the OpenAI Chat Completions API, both with reasoning_effort.
+The API key (ANTHROPIC_API_KEY, XAI_API_KEY or OPENAI_API_KEY) comes from the
 environment or from .env in the repository root; the environment wins.
 
 The API rate-limits an account. The number of requests in flight adapts
@@ -19,6 +23,7 @@ or 529 (Anthropic: overloaded), at most once per 30 s, and slowly grows back up 
 Running out of quota stops the run.
 
     python -m moonmapbench.query --res 22.5 --samples 1
+    python -m moonmapbench.query --res 2 --stride 2 --model grok-4.7 --effort low
     python -m moonmapbench.query --body mars --res 2
 """
 
@@ -39,7 +44,7 @@ from dotenv import load_dotenv
 from moonmapbench import REPO_ROOT
 from moonmapbench.batchlog import BATCH_LOG, read_batch_log
 from moonmapbench.bodies import BODIES, Body
-from moonmapbench.grid import grid_points
+from moonmapbench.grid import grid_points, grid_shape
 from moonmapbench.prompt import build_prompt, parse_elevation
 
 MAX_ATTEMPTS = 8  # with the backoff below, ~6 min of failures before giving up on a point
@@ -47,7 +52,8 @@ BASE_DELAY_S = 5
 MAX_DELAY_S = 120
 RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}  # 529: Anthropic is overloaded
 ANTHROPIC_MAX_TOKENS = 16000  # thinking + answer; a longer reply stops the run
-API_KEY_VARS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+API_KEY_VARS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "xai": "XAI_API_KEY"}
+XAI_BASE_URL = "https://api.x.ai/v1"
 
 
 class AdaptiveLimit:
@@ -90,8 +96,22 @@ class BadAnswer(RuntimeError):
     """The API call worked, but the answer cannot be used (wrong model, refusal, truncated, ...)."""
 
 
+class NotANumber(BadAnswer):
+    """The model finished normally, but its answer is not a plain number ("I don't know.")."""
+
+
+def stop_on_failures(failures: list[str]) -> None:
+    if failures:
+        shown = "\n  ".join(failures[:20])
+        raise RuntimeError(f"{len(failures)} answers failed and were not saved (rerun to ask again):\n  {shown}")
+
+
 def provider_for(model: str) -> str:
-    return "anthropic" if model.startswith("claude-") else "openai"
+    if model.startswith("claude-"):
+        return "anthropic"
+    if model.startswith("grok-"):
+        return "xai"
+    return "openai"
 
 
 async def create_openai(client: openai.AsyncOpenAI, model: str, effort: str, prompt: str):
@@ -144,7 +164,8 @@ def answer_anthropic(message, model: str, lat: float, lon: float) -> tuple[str, 
     return texts[0], message.usage.model_dump(exclude_none=True)
 
 
-BACKENDS = {"anthropic": (create_anthropic, answer_anthropic), "openai": (create_openai, answer_openai)}
+BACKENDS = {"anthropic": (create_anthropic, answer_anthropic), "openai": (create_openai, answer_openai),
+            "xai": (create_openai, answer_openai)}
 
 
 def load_api_key(provider: str) -> None:
@@ -161,6 +182,9 @@ def make_client(provider: str, timeout: float) -> anthropic.AsyncAnthropic | ope
     load_api_key(provider)
     if provider == "anthropic":
         return anthropic.AsyncAnthropic(timeout=timeout, max_retries=0)
+    if provider == "xai":
+        return openai.AsyncOpenAI(api_key=os.environ["XAI_API_KEY"], base_url=XAI_BASE_URL,
+                                  timeout=timeout, max_retries=0)
     return openai.AsyncOpenAI(timeout=timeout, max_retries=0)
 
 
@@ -181,13 +205,13 @@ def lock_run_dir(out_dir: Path):
     return lock
 
 
-def select_points(res: float, n_points: int | None) -> list[tuple[float, float]]:
-    """The grid's pixel centres, or n_points of them for a cheap test."""
-    points = grid_points(res)
+def select_points(res: float, stride: int, n_points: int | None) -> list[tuple[float, float]]:
+    """The grid's queried pixel centres, or n_points of them for a cheap test."""
+    points = grid_points(res, stride)
     if n_points is None:
         return points
     if n_points > len(points):
-        raise ValueError(f"--points {n_points} is more than the {len(points)} points of the {res}° grid")
+        raise ValueError(f"--points {n_points} is more than the {len(points)} points of the grid")
     # A fixed random order: spread over the whole grid, and --points 2N contains the points of --points N.
     order = list(range(len(points)))
     random.Random(0).shuffle(order)
@@ -207,7 +231,7 @@ def load_responses(path: Path, body: Body, model: str, effort: str) -> dict[tupl
                 raise RuntimeError(f"{path}:{line_no}: duplicate record for {key}")
             if rec["model"] != model or rec["reasoning_effort"] != effort:
                 raise RuntimeError(f"{path}:{line_no}: record is for {rec['model']}/{rec['reasoning_effort']}")
-            if rec["prompt"] != build_prompt(body, rec["lat"], rec["lon"]):
+            if rec["prompt"] != build_prompt(body, model, rec["lat"], rec["lon"]):
                 raise RuntimeError(
                     f"{path}:{line_no}: stored prompt differs from the current prompt template for {body.key}. "
                     "Move the old results away before querying with a new prompt."
@@ -219,7 +243,7 @@ def load_responses(path: Path, body: Body, model: str, effort: str) -> dict[tupl
 async def query_one(client: anthropic.AsyncAnthropic | openai.AsyncOpenAI, limit: AdaptiveLimit, body: Body,
                     model: str, effort: str, lat: float, lon: float, sample: int) -> dict:
     create, answer = BACKENDS[provider_for(model)]
-    prompt = build_prompt(body, lat, lon)
+    prompt = build_prompt(body, model, lat, lon)
     for attempt in range(1, MAX_ATTEMPTS + 1):
         async with limit:
             start = time.monotonic()
@@ -248,7 +272,10 @@ async def query_one(client: anthropic.AsyncAnthropic | openai.AsyncOpenAI, limit
         await asyncio.sleep(delay)
 
     content, usage = answer(response, model, lat, lon)
-    parse_elevation(content)  # raises ValueError on anything but a plain number
+    try:
+        parse_elevation(content)
+    except ValueError as e:
+        raise NotANumber(str(e)) from e
     return {
         "lat": lat,
         "lon": lon,
@@ -265,16 +292,18 @@ async def query_one(client: anthropic.AsyncAnthropic | openai.AsyncOpenAI, limit
 
 async def main(args: argparse.Namespace) -> None:
     body = BODIES[args.body]
+    grid_shape(args.res, args.stride)  # raises on a bad grid before anything is created
     out_dir = run_dir(body, args.model, args.effort)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "responses.jsonl"
     lock = lock_run_dir(out_dir)  # held until the process exits
     existing = load_responses(path, body, args.model, args.effort)
 
-    points = select_points(args.res, args.points)
+    points = select_points(args.res, args.stride, args.points)
     todo = [(lat, lon, s) for lat, lon in points for s in range(args.samples) if (lat, lon, s) not in existing]
     total = len(points) * args.samples
-    print(f"{body.title}, {args.model} ({args.effort}), {args.res}°/px: {len(points)} points x {args.samples} samples "
+    print(f"{body.title}, {args.model} ({args.effort}), {args.res}°/px, stride {args.stride}: "
+          f"{len(points)} points x {args.samples} samples "
           f"= {total}; {total - len(todo)} cached, {len(todo)} to query -> {path}", flush=True)
     if not todo:
         return
@@ -285,13 +314,19 @@ async def main(args: argparse.Namespace) -> None:
 
     limit = AdaptiveLimit(args.concurrency)
     done = 0
+    failures: list[str] = []
     t0 = time.monotonic()
     async with make_client(provider_for(args.model), args.timeout) as client:
         with open(path, "a", encoding="utf-8") as f:
 
             async def worker(lat: float, lon: float, sample: int) -> None:
                 nonlocal done
-                rec = await query_one(client, limit, body, args.model, args.effort, lat, lon, sample)
+                try:
+                    rec = await query_one(client, limit, body, args.model, args.effort, lat, lon, sample)
+                except NotANumber as e:  # saved points stay saved; a rerun asks this one again
+                    failures.append(f"{(lat, lon, sample)}: {e}")
+                    print(f"  not saved: {(lat, lon, sample)}: {e}", flush=True)
+                    return
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 done += 1
@@ -302,12 +337,14 @@ async def main(args: argparse.Namespace) -> None:
             async with asyncio.TaskGroup() as tg:
                 for lat, lon, sample in todo:
                     tg.create_task(worker(lat, lon, sample))
+    stop_on_failures(failures)
 
 
 def cli() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--body", choices=BODIES, default="moon", help="which body to ask about")
     p.add_argument("--res", type=float, default=22.5, help="degrees per pixel (must divide 180)")
+    p.add_argument("--stride", type=int, default=1, help="query every STRIDE-th row and column of the grid (see grid.py)")
     p.add_argument("--samples", type=int, default=1, help="answers per pixel")
     p.add_argument("--model", default="gpt-6.1-sol")
     p.add_argument("--effort", default="low", help="reasoning effort")

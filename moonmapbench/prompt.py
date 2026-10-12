@@ -1,4 +1,8 @@
-"""Prompt construction and answer parsing. The prompt templates are in bodies.py."""
+"""Prompt construction and answer parsing. The prompt templates are in bodies.py.
+
+Grok models get a more insistent best-guess sentence: with the standard one, grok-4.7 (low) answered
+"I don't know the elevation at that point." for about a third of the points.
+"""
 
 import re
 
@@ -21,9 +25,19 @@ def format_location(lat: float, lon: float) -> str:
     return f"{lat_text}, {lon_text}"
 
 
-def build_prompt(body: Body, lat: float, lon: float) -> str:
-    """The question about (lat, lon) on `body`."""
-    return body.prompt_template.format(location=format_location(lat, lon))
+BEST_GUESS = "If you are unsure, give your best guess."
+EXPLICIT_BEST_GUESS = ("If you are unsure, give your best guess: an estimate is fine, but always answer with a number "
+                       "and never say that you don't know.")
+
+
+def build_prompt(body: Body, model: str, lat: float, lon: float) -> str:
+    """The question to `model` about (lat, lon) on `body`."""
+    template = body.prompt_template
+    if model.startswith("grok-"):
+        if template.count(BEST_GUESS) != 1:
+            raise ValueError(f"expected the best-guess sentence once in the {body.key} prompt: {template!r}")
+        template = template.replace(BEST_GUESS, EXPLICIT_BEST_GUESS)
+    return template.format(location=format_location(lat, lon))
 
 
 _ANSWER = re.compile(r"^\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:m|meters|metres)?\s*\.?\s*$")
