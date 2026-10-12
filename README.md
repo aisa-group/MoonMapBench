@@ -51,12 +51,31 @@ The same works for [Mars and Mercury](#mars-and-mercury).
 
 ## Results
 
+### Leaderboard
+
+The Moon, 2° grid, low reasoning effort. The score is how much smaller a model's mean absolute
+error (MAE) is than the MAE of always answering the average true elevation of the same points
+(−534 m for the whole 2° grid); higher is better. Below 0%, a model does worse than that constant,
+which uses the ground truth that a blind model cannot see. (The plain average over grid points
+over-weights the poles, as the MAE does; weighted by area it is −260 m.)
+
+![Leaderboard: how much smaller each model's mean error is than always answering the mean](results/leaderboard_res2_n1.png)
+
+| # | Model | Better than always the mean | Mean error |
+|---|---|---|---|
+| 1 | Claude Opus 5.5 | **+28%** | 1,192 m |
+| 2 | GPT 6 Astra | **+10%** | 1,490 m |
+| 3 | Grok 4.7 | **−2%** | 1,695 m |
+
+### All runs
+
 | Model | Effort | Grid | Samples/pixel | MAE | Always 0 m | Exact cell average |
 |---|---|---|---|---|---|---|
 | gpt-6.1-sol | low | 22.5° (16 × 8) | 1 | **1,514 m** | 1,925 m | 925 m |
 | gpt-6.1-sol | low | 7.5° (48 × 24) | 1 | **1,483 m** | 1,754 m | 735 m |
 | gpt-6.1-sol | low | 2° (180 × 90) | 1 | **1,496 m** | 1,788 m | 405 m |
 | claude-opus-5-5 | low | 2° (180 × 90) | 1 | **1,192 m** | 1,788 m | 405 m |
+| gpt-6-astra | low | 2° (180 × 90) | 1 | **1,490 m** | 1,788 m | 405 m |
 | grok-4.7 | low | 2°, every 2nd row and column (90 × 45) | 1 | **1,695 m** | 1,781 m | 396 m |
 
 Grok 4.7 was asked only on every 2nd row and column of the 2° grid (`--res 2 --stride 2`,
@@ -84,14 +103,22 @@ Claude Opus 5.5 at 2°: [with LOLA at the same resolution](results/claude-opus-5
 [stacked](results/claude-opus-5-5__low/res2_n1/stacked.png). Its answers came through the
 Message Batches API (all but 220 test answers), which uses the same requests at half price.
 
+GPT 6 Astra at 2°: [with LOLA at the same resolution](results/gpt-6-astra__low/res2_n1/side_by_side_same_res.png),
+[stacked](results/gpt-6-astra__low/res2_n1/stacked.png). With 1,490 m it scores about the same as
+gpt-6.1-sol, and its map looks similar: the nearside maria, Orientale, Crisium and the South
+Pole–Aitken basin in the right places, the farside highlands too low, and horizontal streaks
+where it repeats one value along a row. It answered every point with a number.
+
 Grok 4.7 next to the other two models: [maps](results/compare_res2_n1_grok.png),
 [answer minus ground truth](results/difference_res2_n1_grok.png); its own figures are in
 [`grok-4.7__low/res2_stride2_n1/`](results/grok-4.7__low/res2_stride2_n1/side_by_side_same_res.png).
 Its map shows the nearside maria in rough outline and the South Pole–Aitken basin, but it
 places the farside highlands far too low, and many single pixels are off by several km.
-With an MAE of 1,695 m it is only a little better than always answering 0 m (1,781 m).
-On the same 4,050 points, claude-opus-5-5 scores 1,186 m and gpt-6.1-sol 1,476 m, close to their
-scores on the whole 2° grid, so the smaller grid does not favor or penalize Grok much.
+With an MAE of 1,695 m it is only a little better than always answering 0 m (1,781 m), and
+worse than always answering the mean elevation of its points (1,654 m).
+On the same 4,050 points, claude-opus-5-5 scores 1,186 m, gpt-6-astra 1,469 m and gpt-6.1-sol
+1,476 m, close to their scores on the whole 2° grid, so the smaller grid does not favor or
+penalize Grok much.
 
 Other figures: [`res2_n1/maps.png`](results/gpt-6.1-sol__low/res2_n1/maps.png) (with LOLA
 sampled at the same points), [7.5°](results/gpt-6.1-sol__low/res7.5_n1/side_by_side.png),
@@ -221,6 +248,10 @@ add `--body mars` or `--body mercury` for the other bodies). A run given as `MOD
 and scored on every k-th row and column, e.g. `grok-4.7:low:2`; `--output` writes to another file.
 With `--difference` it maps each model's answer minus the ground truth instead (red: too high,
 blue: too low) to `results/difference_res2_n1.png`.
+
+The leaderboard (column chart and Markdown table, scored against always answering the mean):
+`uv run python -m moonmapbench.leaderboard --res 2 --runs claude-opus-5-5:low gpt-6-astra:low grok-4.7:low:2`
+writes `results/leaderboard_res2_n1.png` and prints the table.
 
 ## License
 

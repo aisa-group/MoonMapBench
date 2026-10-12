@@ -45,7 +45,8 @@ HIGHLIGHT_TEXT = "#9b2f2c"
 HIGHLIGHT_FILL = "#fbe1de"
 HIGHLIGHT_PAD = 0.35  # box padding, in units of the font size
 # Display names for figure titles; other models are shown by their id.
-MODEL_NAMES = {"gpt-6.1-sol": "GPT 6.1 Sol", "claude-opus-5-5": "Claude Opus 5.5", "grok-4.7": "Grok 4.7"}
+MODEL_NAMES = {"gpt-6.1-sol": "GPT 6.1 Sol", "gpt-6-astra": "GPT 6 Astra", "claude-opus-5-5": "Claude Opus 5.5",
+               "grok-4.7": "Grok 4.7"}
 
 
 def collect_predictions(records: dict, points: list[tuple[float, float]], samples: int) -> tuple[np.ndarray, list[list[str]]]:
