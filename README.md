@@ -13,6 +13,12 @@ The same works for [Mars and Mercury](#mars-and-mercury).
 - **Grid:** equirectangular, `res` degrees per pixel, one query at each pixel centre
   (same as the Earth post). Default `res = 22.5°` gives a 16 × 8 image = 128 queries.
   The Earth post mostly used 2° (180 × 90 = 16,200 queries).
+  `--stride k` queries only every k-th row and column, starting with the north-west pixel.
+  Each point then stands for a k × k block of pixels, but it is still the centre of a `res` pixel.
+  `--res 2 --stride 2` gives a 90 × 45 image of 4° blocks (4,050 queries) at latitudes
+  89°, 85°, …, −87° and longitudes −179°, −175°, …, 177°. These are 2° grid points, so a later
+  run of the whole 2° grid reuses the answers, and runs of the whole 2° grid can be scored on
+  exactly these points. The cell-average reference then uses the 2° cell of each point.
 - **Prompt** (one user message, no system prompt, no tools):
 
   > Say the elevation of this location on the Moon in meters, relative to the lunar
@@ -22,6 +28,12 @@ The same works for [Mars and Mercury](#mars-and-mercury).
   Without the "best guess" sentence, gpt-6.1-sol refused ("I don't know.", "Unknown")
   for about half of the points in a pilot. The Earth post forces a Land/Water choice, so
   we force a number in the same way.
+  Grok models get a more insistent sentence instead: "If you are unsure, give your best
+  guess: an estimate is fine, but always answer with a number and never say that you don't
+  know." With the standard sentence, grok-4.7 (low) answered "I don't know the elevation at
+  that point." or similar for 34 of 99 points in a pilot. With this one it did so for 1 of 100
+  points in the pilot and for 104 of 4,030 in the run below (2.6%, mostly near the north pole).
+  As for every model, such points are asked again until the answer is a number.
 - **Samples:** 1 answer per pixel by default (`--samples N` averages N answers, as the
   Earth post averaged its n=4 samples per pixel).
 - **Ground truth:** LRO LOLA global DEM
@@ -45,6 +57,11 @@ The same works for [Mars and Mercury](#mars-and-mercury).
 | gpt-6.1-sol | low | 7.5° (48 × 24) | 1 | **1,483 m** | 1,754 m | 735 m |
 | gpt-6.1-sol | low | 2° (180 × 90) | 1 | **1,496 m** | 1,788 m | 405 m |
 | claude-opus-5-5 | low | 2° (180 × 90) | 1 | **1,192 m** | 1,788 m | 405 m |
+| grok-4.7 | low | 2°, every 2nd row and column (90 × 45) | 1 | **1,695 m** | 1,781 m | 396 m |
+
+Grok 4.7 was asked only on every 2nd row and column of the 2° grid (`--res 2 --stride 2`,
+4,050 points), to save cost: about $19 instead of about $75, as xAI does not take batch requests
+for grok-4.7. Its "always 0 m" and "exact cell average" columns are for these 4,050 points.
 
 ![gpt-6.1-sol's blind map at 2° above the ground truth at the same pixel centres](results/gpt-6.1-sol__low/res2_n1/stacked.png)
 
@@ -66,6 +83,15 @@ from the coarse grid.
 Claude Opus 5.5 at 2°: [with LOLA at the same resolution](results/claude-opus-5-5__low/res2_n1/side_by_side_same_res.png),
 [stacked](results/claude-opus-5-5__low/res2_n1/stacked.png). Its answers came through the
 Message Batches API (all but 220 test answers), which uses the same requests at half price.
+
+Grok 4.7 next to the other two models: [maps](results/compare_res2_n1_grok.png),
+[answer minus ground truth](results/difference_res2_n1_grok.png); its own figures are in
+[`grok-4.7__low/res2_stride2_n1/`](results/grok-4.7__low/res2_stride2_n1/side_by_side_same_res.png).
+Its map shows the nearside maria in rough outline and the South Pole–Aitken basin, but it
+places the farside highlands far too low, and many single pixels are off by several km.
+With an MAE of 1,695 m it is only a little better than always answering 0 m (1,781 m).
+On the same 4,050 points, claude-opus-5-5 scores 1,186 m and gpt-6.1-sol 1,476 m, close to their
+scores on the whole 2° grid, so the smaller grid does not favor or penalize Grok much.
 
 Other figures: [`res2_n1/maps.png`](results/gpt-6.1-sol__low/res2_n1/maps.png) (with LOLA
 sampled at the same points), [7.5°](results/gpt-6.1-sol__low/res7.5_n1/side_by_side.png),
@@ -116,11 +142,17 @@ repository root (the environment wins):
   [Messages API](https://platform.claude.com/docs/en/api/messages) with adaptive thinking
   and `output_config.effort`, through the official `anthropic` Python package. A refusal is
   not saved and stops the run; no other model answers in its place.
+- Grok models (`grok-*`): `XAI_API_KEY`. Queries go to xAI's OpenAI-compatible
+  [Chat Completions API](https://docs.x.ai/developers/rest-api-reference/inference/chat) with
+  `reasoning_effort`, through the `openai` package. xAI reports the cost of each answer,
+  and the cost script adds these up. xAI counts about 1,300 input tokens for each request
+  (mostly cached), much more than the prompt: it adds text of its own.
 
 ```
 # .env
 OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
+XAI_API_KEY=...
 ```
 
 ```bash
@@ -129,15 +161,18 @@ scripts/run.sh --res 10 --samples 4 --effort medium
 scripts/run.sh --res 7.5 --concurrency 64                 # fewer parallel requests
 scripts/run.sh --model claude-opus-5-5 --effort low       # Claude Opus 5.5
 scripts/run.sh --model claude-opus-5-5 --points 20        # 20 queries only, as a cheap test
+scripts/run.sh --model grok-4.7 --effort low --res 2 --points 100   # grok-4.7, 100 points of the 2° grid
 scripts/run.sh --batch --max-cost 100 --model claude-opus-5-5 --res 2   # Batches API, half price
 scripts/run.sh --body mars --res 2                        # Mars instead of the Moon (also: --body mercury)
+scripts/run.sh --model grok-4.7 --res 2 --stride 2        # every 2nd row and column of the 2° grid
 ```
 
 `--points N` queries only N grid points, picked at random with a fixed seed, and skips the
 report, which needs the whole grid. At the end the script prints the tokens of all saved
-answers of that model and effort, and their cost at list price for models in
-`PRICES_PER_MTOK` in `moonmapbench/cost.py`. This is a lower bound on what was spent:
-requests that failed or were cancelled are billed too, but not saved.
+answers of that model and effort, and their cost: at list price for models in
+`PRICES_PER_MTOK` in `moonmapbench/cost.py`, as reported by xAI for Grok models. This is a
+lower bound on what was spent: requests that failed, were refused or were cancelled are billed
+too, but not saved.
 
 `--batch` (Claude models only) sends all missing points as one request to the
 [Message Batches API](https://platform.claude.com/docs/en/build-with-claude/batch-processing),
@@ -149,9 +184,14 @@ model and effort is above `--max-cost`. So query a few points first, e.g. with `
 Each submission is logged in `batches.jsonl` next to the answers. A rerun first waits
 for and collects every batch that is not collected yet, so an interrupted run loses nothing
 and no point that is still in a batch is sent again; queries without `--batch` refuse to run
-until then. Answers that cannot be used (errors, refusals, answers that are not a plain
-number) are not saved; the run saves the rest and then stops with a list of them, and a rerun
-asks those points again.
+until then.
+
+With or without `--batch`, answers that are not a plain number (such as "I don't know.") are
+not saved; the run saves the rest and then stops with a list of them, and a rerun asks those
+points again. A rerun asks again until the model gives a number, so the saved answer is the
+first number the model gave. With `--batch`, all other unusable answers and errors are handled
+in the same way. Without `--batch`, they stop the run at once, as they would likely hit every
+request (e.g. another model answering).
 
 Requests run in parallel, up to `--concurrency` (default 256) at a time. When the API
 answers "Too Many Requests" (HTTP 429), the number of requests in flight drops by 20% and
@@ -167,7 +207,8 @@ The ground-truth DEM is downloaded to `data/` on first use and checked by sha256
 Moon (33 MB), MOLA for Mars (33 MB), the MESSENGER DEM for Mercury (531 MB; the report needs
 about 2 GB of memory for it).
 
-Outputs per run in `<results>/<model>__<effort>/res<res>_n<samples>/`:
+Outputs per run in `<results>/<model>__<effort>/res<res>_n<samples>/`
+(`res<res>_stride<k>_n<samples>/` with `--stride k > 1`):
 `metrics.json`, `points.csv` (truth, prediction and raw answers per pixel), `maps.png`,
 `side_by_side.png` (the real body next to the model's map), `side_by_side_same_res.png`
 (the same, with the real Moon at the grid's resolution) and `stacked.png` (the model's map
@@ -176,7 +217,8 @@ above the ground truth at the grid's resolution).
 To put several models above the ground truth in one image, for sharing:
 `uv run python -m moonmapbench.compare --res 2 --runs claude-opus-5-5:low gpt-6.1-sol:low`
 writes `results/compare_res2_n1.png` (needs `UV_PROJECT_ENVIRONMENT` set as in `scripts/run.sh`;
-add `--body mars` or `--body mercury` for the other bodies).
+add `--body mars` or `--body mercury` for the other bodies). A run given as `MODEL:EFFORT:k` is shown
+and scored on every k-th row and column, e.g. `grok-4.7:low:2`; `--output` writes to another file.
 With `--difference` it maps each model's answer minus the ground truth instead (red: too high,
 blue: too low) to `results/difference_res2_n1.png`.
 

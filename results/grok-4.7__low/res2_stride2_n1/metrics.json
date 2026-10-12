@@ -1,0 +1,12 @@
+{
+  "body": "moon",
+  "model": "grok-4.7",
+  "reasoning_effort": "low",
+  "res_deg": 2.0,
+  "stride": 2,
+  "samples_per_pixel": 1,
+  "n_pixels": 4050,
+  "mae_m": 1695.4572530864198,
+  "baseline_zero_mae_m": 1781.248672839506,
+  "reference_cell_mean_mae_m": 396.19158286937216
+}
