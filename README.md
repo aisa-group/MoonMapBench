@@ -67,21 +67,6 @@ over-weights the poles, as the MAE does; weighted by area it is −260 m.)
 | 2 | GPT 6 Astra | **+10%** | 1,490 m |
 | 3 | Grok 4.7 | **−2%** | 1,695 m |
 
-### All runs
-
-| Model | Effort | Grid | Samples/pixel | MAE | Always 0 m | Exact cell average |
-|---|---|---|---|---|---|---|
-| gpt-6.1-sol | low | 22.5° (16 × 8) | 1 | **1,514 m** | 1,925 m | 925 m |
-| gpt-6.1-sol | low | 7.5° (48 × 24) | 1 | **1,483 m** | 1,754 m | 735 m |
-| gpt-6.1-sol | low | 2° (180 × 90) | 1 | **1,496 m** | 1,788 m | 405 m |
-| claude-opus-5-5 | low | 2° (180 × 90) | 1 | **1,192 m** | 1,788 m | 405 m |
-| gpt-6-astra | low | 2° (180 × 90) | 1 | **1,490 m** | 1,788 m | 405 m |
-| grok-4.7 | low | 2°, every 2nd row and column (90 × 45) | 1 | **1,695 m** | 1,781 m | 396 m |
-
-Grok 4.7 was asked only on every 2nd row and column of the 2° grid (`--res 2 --stride 2`,
-4,050 points), to save cost: about $19 instead of about $75, as xAI does not take batch requests
-for grok-4.7. Its "always 0 m" and "exact cell average" columns are for these 4,050 points.
-
 ![gpt-6.1-sol's blind map at 2° above the ground truth at the same pixel centres](results/gpt-6.1-sol__low/res2_n1/stacked.png)
 
 The ground truth is LOLA at the 2° pixel centres, the values the model is scored against.
@@ -109,7 +94,9 @@ gpt-6.1-sol, and its map looks similar: the nearside maria, Orientale, Crisium a
 Pole–Aitken basin in the right places, the farside highlands too low, and horizontal streaks
 where it repeats one value along a row. It answered every point with a number.
 
-Grok 4.7 next to the other two models: [maps](results/compare_res2_n1_grok.png),
+Grok 4.7 was asked only on every 2nd row and column of the 2° grid (`--res 2 --stride 2`,
+4,050 points), to save cost: about $19 instead of about $75, as xAI does not take batch requests
+for grok-4.7. Next to the other two models: [maps](results/compare_res2_n1_grok.png),
 [answer minus ground truth](results/difference_res2_n1_grok.png); its own figures are in
 [`grok-4.7__low/res2_stride2_n1/`](results/grok-4.7__low/res2_stride2_n1/side_by_side_same_res.png).
 Its map shows the nearside maria in rough outline and the South Pole–Aitken basin, but it
